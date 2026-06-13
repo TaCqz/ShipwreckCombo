@@ -6,6 +6,7 @@
 #include "soh/util.h"
 #include <soh/Network/Sail/Sail.h>
 #include <soh/Network/CrowdControl/CrowdControl.h>
+#include <soh/Network/MultiShip/MultiShip.h>
 
 namespace SohGui {
 
@@ -179,14 +180,54 @@ void SohMenu::AddMenuNetwork() {
     path.column = SECTION_COLUMN_1;
 
     AddWidget(path, "MultiShip", WIDGET_SEPARATOR_TEXT);
-    AddWidget(path, "MultiShip is experimental and still under development. This module allows you to connect\n"
-                    "to a MultiShip Server. This can be found ", WIDGET_TEXT);
+    AddWidget(path,
+    "MultiShip is experimental and still under development. This module allows you to connect "
+                "to a MultiShip Server.\n"
+                "\n"
+                "Click this button to copy the link to the MultiShip Github "
+                "page to your clipboard.",
+                WIDGET_TEXT);
     AddWidget(path, ICON_FA_CLIPBOARD "##multiship", WIDGET_BUTTON)
         .Callback([](WidgetInfo& info) {
             ImGui::SetClipboardText("https://github.com/TaCqz/MultiShip");
             Notification::Emit({
                 .message = "Copied to clipboard",
             });
+        })
+        .Options(ButtonOptions().Tooltip("https://github.com/TaCqz/MultiShip"));
+
+    AddWidget(path, "Host & Port", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
+        ImGui::BeginDisabled(MultiShip::Instance->isConnected ||
+                             CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::Text("%s", info.name.c_str());
+        CVarInputString("##HostMultiShip", CVAR_REMOTE_MULTISHIP("Host"),
+                        InputOptions()
+                            .Color(THEME_COLOR)
+                            .PlaceholderText("127.0.0.1")
+                            .DefaultValue("127.0.0.1")
+                            .Size(ImVec2(ImGui::GetFontSize() * 15, 0))
+                            .LabelPosition(LabelPositions::None));
+        ImGui::SameLine();
+        ImGui::Text(":");
+        ImGui::SameLine();
+        CVarInputInt("##PortMultiShip", CVAR_REMOTE_MULTISHIP("Port"),
+                     InputOptions()
+                         .Color(THEME_COLOR)
+                         .PlaceholderText("43384")
+                         .DefaultValue("43384")
+                         .Size(ImVec2(ImGui::GetFontSize() * 5, 0))
+                         .LabelPosition(LabelPositions::None));
+        ImGui::EndDisabled();
+    });
+    AddWidget(path, "Connect##MultiShip", WIDGET_BUTTON)
+        .PreFunc([](WidgetInfo& info) {
+            std::string host = CVarGetString(CVAR_REMOTE_MULTISHIP("Host"), "127.0.0.1");
+            uint16_t port = CVarGetInteger(CVAR_REMOTE_MULTISHIP("Port"), 43384);
+            info.options->disabled = !(!SohUtils::IsStringEmpty(host) && port > 1024 && port < 65535);
+        })
+        .Callback([](WidgetInfo& info) {
+            // For now this just invokes the stub; it does not actually connect yet.
+            MultiShip::Instance->Connect();
         });
 #endif
 }
