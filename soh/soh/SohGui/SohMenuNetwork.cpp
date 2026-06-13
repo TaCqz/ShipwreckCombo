@@ -187,7 +187,7 @@ void SohMenu::AddMenuNetwork() {
             Notification::Emit({
                 .message = "Copied to clipboard",
             });
-        })
+        });
 #endif
 }
 
