@@ -171,6 +171,24 @@ void SohMenu::AddMenuNetwork() {
                                            "rooms\", so they don't need to be killed to complete these rooms."));
     path.sidebarName = "Anchor";
     AddSidebarEntry("Network", path.sidebarName, 2);
+
+#ifdef ENABLE_MULTISHIP
+    // MultiShip (experimental) — only compiled when built with -DENABLE_MULTISHIP=ON.
+    path.sidebarName = "MultiShip";
+    AddSidebarEntry("Network", path.sidebarName, 2);
+    path.column = SECTION_COLUMN_1;
+
+    AddWidget(path, "MultiShip", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path, "MultiShip is experimental and still under development. This module allows you to connect\n"
+                    "to a MultiShip Server. This can be found ", WIDGET_TEXT);
+    AddWidget(path, ICON_FA_CLIPBOARD "##multiship", WIDGET_BUTTON)
+        .Callback([](WidgetInfo& info) {
+            ImGui::SetClipboardText("https://github.com/TaCqz/MultiShip");
+            Notification::Emit({
+                .message = "Copied to clipboard",
+            });
+        })
+#endif
 }
 
 } // namespace SohGui

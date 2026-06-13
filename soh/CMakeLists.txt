@@ -15,6 +15,8 @@ endif()
 set (BUILD_UTILS OFF CACHE STRING "no utilities")
 set (BUILD_SHARED_LIBS OFF CACHE STRING "install/link shared instead of static libs")
 
+option(ENABLE_MULTISHIP "Compile in the experimental MultiShip module" OFF)
+
 ################################################################################
 # Set target arch type if empty. Visual studio solution generator provides it.
 ################################################################################
@@ -342,6 +344,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
             "$<$<CONFIG:Release>:"
                 "NDEBUG;"
             ">"
+            "$<$<BOOL:${ENABLE_MULTISHIP}>:ENABLE_MULTISHIP>"
             "INCLUDE_GAME_PRINTF;"
             "F3DEX_GBI_2"
             "UNICODE;"
@@ -363,6 +366,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
             "$<$<CONFIG:Release>:"
                 "NDEBUG;"
             ">"
+            "$<$<BOOL:${ENABLE_MULTISHIP}>:ENABLE_MULTISHIP>"
             "INCLUDE_GAME_PRINTF;"
             "F3DEX_GBI_2"
             "WIN32;"
@@ -382,6 +386,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "CafeOS")
         "$<$<CONFIG:Release>:"
             "NDEBUG;"
         ">"
+        "$<$<BOOL:${ENABLE_MULTISHIP}>:ENABLE_MULTISHIP>"
         "F3DEX_GBI_2;"
         "SPDLOG_NO_THREAD_ID;"
         "SPDLOG_NO_TLS;"
@@ -397,6 +402,7 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang|AppleClang")
         "$<$<CONFIG:Release>:"
             "NDEBUG;"
         ">"
+        "$<$<BOOL:${ENABLE_MULTISHIP}>:ENABLE_MULTISHIP>"
         "F3DEX_GBI_2;"
         "_CONSOLE;"
         "_CRT_SECURE_NO_WARNINGS;"
