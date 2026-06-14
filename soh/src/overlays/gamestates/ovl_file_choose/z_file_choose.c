@@ -26,7 +26,11 @@
 #include "soh/ShipUtils.h"
 
 #define MIN_QUEST (ResourceMgr_GameHasOriginal() ? QUEST_NORMAL : QUEST_MASTER)
+#ifdef ENABLE_MULTISHIP
+#define MAX_QUEST QUEST_MULTISHIP
+#else
 #define MAX_QUEST QUEST_BOSSRUSH
+#endif
 
 void Sram_InitDebugSave(void);
 void Sram_InitBossRushSave();
@@ -1809,6 +1813,23 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
                     ResourceMgr_GameHasOriginal() ? gTitleZeldaShieldLogoTex : gTitleZeldaShieldLogoMQTex, 160, 160);
                 FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleBossRushSubtitleTex, 128, 32);
                 break;
+
+#ifdef ENABLE_MULTISHIP
+            case QUEST_MULTISHIP:
+                gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, this->logoAlpha);
+                FileChoose_DrawTextureI8(this->state.gfxCtx, gTitleTheLegendOfTextTex, 72, 8, 156, 108, 72, 8, 1024,
+                                         1024);
+                FileChoose_DrawTextureI8(this->state.gfxCtx, gTitleOcarinaOfTimeTMTextTex, 96, 8, 154, 163, 96, 8, 1024,
+                                         1024);
+                FileChoose_DrawImageRGBA32(
+                    this->state.gfxCtx, 160, 135,
+                    ResourceMgr_GameHasOriginal() ? gTitleZeldaShieldLogoTex : gTitleZeldaShieldLogoMQTex, 160, 160);
+                // TODO: Placeholder logo. Reuses the Randomizer subtitle badge so the MultiShip
+                //       quest is visually distinct without a new asset. Replace with a dedicated
+                //       gTitleMultiShipSubtitleTex once the texture exists in the asset pipeline.
+                FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleRandomizerSubtitleTex, 128, 32);
+                break;
+#endif
         }
     } else if (this->configMode == CM_BOSS_RUSH_MENU) {
         FileChoose_DrawBossRushMenuWindowContents(this);

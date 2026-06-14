@@ -6,20 +6,36 @@
 #include <libultraship/libultraship.h>
 #include <nlohmann/json.hpp>
 #include "soh/ShipUtils.h"
+#include "soh/cvar_prefixes.h"
 
 extern "C" {
 extern SaveContext gSaveContext;
 }
 
 void MultiShip::Connect() {
-    // TODO: Establish the actual connection to the MultiShip server.
-    //
-    // Empty stub for now
-    SPDLOG_INFO("[MultiShip] Connect() called (stub - not yet implemented)");
+    // The "Connect" menu button toggles the connection. The underlying Network
+    // base class handles the actual TCP connection (and auto-reconnect) on its
+    // own thread; we just feed it the configured host/port.
+    if (isEnabled) {
+        SPDLOG_INFO("[MultiShip] Disconnecting from server");
+        Network::Disable();
+        return;
+    }
+
+    std::string host = CVarGetString(CVAR_REMOTE_MULTISHIP("Host"), "127.0.0.1");
+    uint16_t port = CVarGetInteger(CVAR_REMOTE_MULTISHIP("Port"), 43384);
+    SPDLOG_INFO("[MultiShip] Connecting to {}:{}", host, port);
+    Network::Enable(host.c_str(), port);
 }
 
 void MultiShip::OnConnected() {
-    // TODO: send an initial "connected"/handshake payload to the server.
+    // Announce ourselves so the server has something to display immediately.
+    nlohmann::json payload;
+    payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+    payload["type"] = "hook";
+    payload["hook"]["type"] = "OnConnected";
+    SendJsonToRemote(payload);
+
     RegisterHooks();
 }
 
@@ -41,7 +57,12 @@ void MultiShip::RegisterHooks() {
         if (!isConnected || !GameInteractor::IsSaveLoaded())
             return;
 
-        // TODO: build and send the "save loaded" payload (fileNum).
+        nlohmann::json payload;
+        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+        payload["type"] = "hook";
+        payload["hook"]["type"] = "OnLoadGame";
+        payload["hook"]["fileNum"] = fileNum;
+        SendJsonToRemote(payload);
     });
 
     // Receiving an item.
@@ -49,7 +70,13 @@ void MultiShip::RegisterHooks() {
         if (!isConnected || !GameInteractor::IsSaveLoaded())
             return;
 
-        // TODO: build and send the "item received" payload (itemEntry).
+        nlohmann::json payload;
+        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+        payload["type"] = "hook";
+        payload["hook"]["type"] = "OnItemReceive";
+        payload["hook"]["tableId"] = itemEntry.tableId;
+        payload["hook"]["getItemId"] = itemEntry.getItemId;
+        SendJsonToRemote(payload);
     });
 
     // Defeating a boss. OnBossDefeat is already filtered to boss enemies only,
@@ -59,8 +86,13 @@ void MultiShip::RegisterHooks() {
             return;
 
         Actor* actor = (Actor*)refActor;
-        (void)actor;
-        // TODO: build and send the "boss defeated" payload (actor->id, actor->params).
+        nlohmann::json payload;
+        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+        payload["type"] = "hook";
+        payload["hook"]["type"] = "OnBossDefeat";
+        payload["hook"]["actorId"] = actor->id;
+        payload["hook"]["params"] = actor->params;
+        SendJsonToRemote(payload);
     });
 
     // Dying and getting damaged both surface through the health-change hook.
@@ -70,11 +102,18 @@ void MultiShip::RegisterHooks() {
         if (!isConnected || !GameInteractor::IsSaveLoaded())
             return;
 
+        nlohmann::json payload;
+        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+        payload["type"] = "hook";
         if (gSaveContext.health <= 0) {
-            // TODO: build and send the "player died" payload.
+            payload["hook"]["type"] = "OnPlayerDeath";
         } else if (amount < 0) {
-            // TODO: build and send the "player damaged" payload (amount).
+            payload["hook"]["type"] = "OnPlayerDamage";
+            payload["hook"]["amount"] = amount;
+        } else {
+            return;
         }
+        SendJsonToRemote(payload);
     });
 }
 

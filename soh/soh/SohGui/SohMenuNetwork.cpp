@@ -197,7 +197,7 @@ void SohMenu::AddMenuNetwork() {
         .Options(ButtonOptions().Tooltip("https://github.com/TaCqz/MultiShip"));
 
     AddWidget(path, "Host & Port", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
-        ImGui::BeginDisabled(MultiShip::Instance->isConnected ||
+        ImGui::BeginDisabled(MultiShip::Instance->isEnabled ||
                              CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
         ImGui::Text("%s", info.name.c_str());
         CVarInputString("##HostMultiShip", CVAR_REMOTE_MULTISHIP("Host"),
@@ -224,11 +224,25 @@ void SohMenu::AddMenuNetwork() {
             std::string host = CVarGetString(CVAR_REMOTE_MULTISHIP("Host"), "127.0.0.1");
             uint16_t port = CVarGetInteger(CVAR_REMOTE_MULTISHIP("Port"), 43384);
             info.options->disabled = !(!SohUtils::IsStringEmpty(host) && port > 1024 && port < 65535);
+            if (MultiShip::Instance->isEnabled) {
+                info.name = "Disconnect##MultiShip";
+            } else {
+                info.name = "Connect##MultiShip";
+            }
         })
         .Callback([](WidgetInfo& info) {
-            // For now this just invokes the stub; it does not actually connect yet.
+            // Toggles the connection; the actual TCP work happens on a background
+            // thread inside the Network base class.
             MultiShip::Instance->Connect();
         });
+    AddWidget(path, "Connecting...##MultiShip", WIDGET_TEXT).PreFunc([](WidgetInfo& info) {
+        info.isHidden = !MultiShip::Instance->isEnabled;
+        if (MultiShip::Instance->isConnected) {
+            info.name = "Connected##MultiShip";
+        } else {
+            info.name = "Connecting...##MultiShip";
+        }
+    });
 #endif
 }
 
