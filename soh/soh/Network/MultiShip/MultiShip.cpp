@@ -62,6 +62,9 @@ void MultiShip::RegisterHooks() {
         payload["type"] = "hook";
         payload["hook"]["type"] = "OnLoadGame";
         payload["hook"]["fileNum"] = fileNum;
+        // Quest/mode of the loaded file (Quest enum: 0 Normal, 1 Master, 2 Rando,
+        // 3 Boss Rush, 4 MultiShip). Sourced from the loaded save, not the carousel.
+        payload["hook"]["questId"] = gSaveContext.ship.quest.id;
         SendJsonToRemote(payload);
     });
 
