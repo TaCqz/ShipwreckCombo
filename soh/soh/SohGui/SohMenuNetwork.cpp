@@ -196,6 +196,21 @@ void SohMenu::AddMenuNetwork() {
         })
         .Options(ButtonOptions().Tooltip("https://github.com/TaCqz/MultiShip"));
 
+    AddWidget(path, "User Name", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
+        // The name the server uses to label this player's messages. Locked while
+        // connected since it is sent once during the connection handshake.
+        ImGui::BeginDisabled(MultiShip::Instance->isEnabled ||
+                             CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
+        ImGui::Text("%s", info.name.c_str());
+        CVarInputString("##UserNameMultiShip", CVAR_REMOTE_MULTISHIP("UserName"),
+                        InputOptions()
+                            .Color(THEME_COLOR)
+                            .PlaceholderText("Player")
+                            .Size(ImVec2(ImGui::GetFontSize() * 15, 0))
+                            .LabelPosition(LabelPositions::None));
+        ImGui::EndDisabled();
+    });
+
     AddWidget(path, "Host & Port", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
         ImGui::BeginDisabled(MultiShip::Instance->isEnabled ||
                              CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));

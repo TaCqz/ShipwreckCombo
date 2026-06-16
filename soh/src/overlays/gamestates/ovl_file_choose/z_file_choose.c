@@ -1824,10 +1824,7 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
                 FileChoose_DrawImageRGBA32(
                     this->state.gfxCtx, 160, 135,
                     ResourceMgr_GameHasOriginal() ? gTitleZeldaShieldLogoTex : gTitleZeldaShieldLogoMQTex, 160, 160);
-                // TODO: Placeholder logo. Reuses the Randomizer subtitle badge so the MultiShip
-                //       quest is visually distinct without a new asset. Replace with a dedicated
-                //       gTitleMultiShipSubtitleTex once the texture exists in the asset pipeline.
-                FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleRandomizerSubtitleTex, 128, 32);
+                FileChoose_DrawImageRGBA32(this->state.gfxCtx, 182, 180, gTitleMultiShipSubtitleTex, 128, 32);
                 break;
 #endif
         }

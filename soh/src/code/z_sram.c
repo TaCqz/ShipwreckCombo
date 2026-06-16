@@ -269,6 +269,14 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
         gSaveContext.ship.quest.id = currentQuest;
     }
 
+#ifdef ENABLE_MULTISHIP
+    // MultiShip files skip the opening intro cutscene, the same way the debug
+    // save does above (cutsceneIndex 0 spawns Link directly at his house).
+    if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
+        gSaveContext.cutsceneIndex = 0;
+    }
+#endif
+
     Save_SaveFile();
     SaveManager_ThreadPoolWait();
 }

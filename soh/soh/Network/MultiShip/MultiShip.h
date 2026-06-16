@@ -11,7 +11,8 @@
 class MultiShip : public Network {
 
   private:
-    void RegisterHooks();
+    // Sends an OnLoadGame packet for the currently loaded MultiShip file.
+    void SendOnLoadGame();
 
   public:
     static MultiShip* Instance;
@@ -21,9 +22,16 @@ class MultiShip : public Network {
     // For now this is a stub that does nothing real (see MultiShip.cpp).
     void Connect();
 
+    // Registers the GameInteractor hooks. Called once at boot on the main thread
+    // (NOT from the network thread); each hook no-ops while disconnected.
+    void RegisterHooks();
+
     void OnIncomingJson(nlohmann::json payload) override;
     void OnConnected() override;
-    void OnDisconnected() override;
+
+    // Stamps every outgoing packet with the configured user name before sending,
+    // so the server can always attribute a message to the player who sent it.
+    void SendJsonToRemote(nlohmann::json packet) override;
 };
 
 #endif // __cplusplus

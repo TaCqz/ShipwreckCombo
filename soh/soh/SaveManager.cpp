@@ -1977,6 +1977,15 @@ void SaveManager::LoadBaseVersion3() {
     if (isMQ) {
         gSaveContext.ship.quest.id = QUEST_MASTER;
     }
+#ifdef ENABLE_MULTISHIP
+    // Restore the MultiShip gamemode for files saved with it (missing key in
+    // older/other saves defaults to 0, leaving quest.id untouched).
+    int isMultiShip = 0;
+    SaveManager::Instance->LoadData("isMultiShip", isMultiShip);
+    if (isMultiShip) {
+        gSaveContext.ship.quest.id = QUEST_MULTISHIP;
+    }
+#endif
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
             SaveManager::Instance->LoadData("x", gSaveContext.ship.backupFW.pos.x);
@@ -2152,6 +2161,15 @@ void SaveManager::LoadBaseVersion4() {
     if (isMQ) {
         gSaveContext.ship.quest.id = QUEST_MASTER;
     }
+#ifdef ENABLE_MULTISHIP
+    // Restore the MultiShip gamemode for files saved with it (missing key in
+    // older/other saves defaults to 0, leaving quest.id untouched).
+    int isMultiShip = 0;
+    SaveManager::Instance->LoadData("isMultiShip", isMultiShip);
+    if (isMultiShip) {
+        gSaveContext.ship.quest.id = QUEST_MULTISHIP;
+    }
+#endif
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
             SaveManager::Instance->LoadData("x", gSaveContext.ship.backupFW.pos.x);
@@ -2320,6 +2338,12 @@ void SaveManager::SaveBase(SaveContext* saveContext, int sectionID, bool fullSav
         SaveManager::Instance->SaveData("", saveContext->ship.randomizerInf[i]);
     });
     SaveManager::Instance->SaveData("isMasterQuest", saveContext->ship.quest.id == QUEST_MASTER);
+#ifdef ENABLE_MULTISHIP
+    // quest.id is otherwise reconstructed on load from isMasterQuest alone, which
+    // would drop MultiShip files back to QUEST_NORMAL. Persist the MultiShip quest
+    // explicitly so loaded files keep their gamemode.
+    SaveManager::Instance->SaveData("isMultiShip", saveContext->ship.quest.id == QUEST_MULTISHIP);
+#endif
     SaveManager::Instance->SaveStruct("backupFW", [&]() {
         SaveManager::Instance->SaveStruct("pos", [&]() {
             SaveManager::Instance->SaveData("x", saveContext->ship.backupFW.pos.x);
