@@ -7,9 +7,19 @@
 #include "soh/Enhancements/randomizer/3drando/random.hpp"
 
 #include <vector>
+#include <mutex>
+#include <optional>
+#include <string>
 
 static std::array<std::vector<Text>, RG_MAX> trickNameTable; // Table of trick names for ice traps
 bool initTrickNames = false; // Indicates if trick ice trap names have been initialized yet
+
+// One-shot overrides for the next given ice trap (see Traps.h). Guarded because
+// the setter/model-getter run on the network thread while the text getter runs
+// on the main thread when the textbox is built.
+static std::mutex sIceTrapOverrideMutex;
+static std::optional<RandomizerGet> sNextIceTrapModel;
+static std::optional<std::string> sNextIceTrapText;
 
 /* Initialize the table of trick names with an easy, medium, and hard name for each language.
    english, french, german // spanish */
@@ -1784,6 +1794,30 @@ static std::string ReplaceItemName(const char* c_str, GetItemEntry getItemEntry)
     }
 
     return str;
+}
+
+void Rando::Traps::SetNextIceTrapModel(RandomizerGet model) {
+    std::lock_guard<std::mutex> lock(sIceTrapOverrideMutex);
+    sNextIceTrapModel = model;
+}
+
+std::optional<RandomizerGet> Rando::Traps::TakeNextIceTrapModel() {
+    std::lock_guard<std::mutex> lock(sIceTrapOverrideMutex);
+    std::optional<RandomizerGet> model = sNextIceTrapModel;
+    sNextIceTrapModel.reset();
+    return model;
+}
+
+void Rando::Traps::SetNextIceTrapText(const std::string& text) {
+    std::lock_guard<std::mutex> lock(sIceTrapOverrideMutex);
+    sNextIceTrapText = text;
+}
+
+std::optional<std::string> Rando::Traps::TakeNextIceTrapText() {
+    std::lock_guard<std::mutex> lock(sIceTrapOverrideMutex);
+    std::optional<std::string> text = sNextIceTrapText;
+    sNextIceTrapText.reset();
+    return text;
 }
 
 void Rando::Traps::BuildIceTrapMessage(CustomMessage& msg, GetItemEntry getItemEntry) {

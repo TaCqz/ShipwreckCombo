@@ -13,6 +13,8 @@
 #include "soh/Enhancements/audio/AudioEditor.h"
 #include "soh/Enhancements/randomizer/logic.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
+#include "soh/Enhancements/randomizer/Traps.h"
+#include "soh/ShipUtils.h"
 
 #define Path _Path
 #define PATH_HACK
@@ -382,6 +384,26 @@ static bool ItemHandler(std::shared_ptr<Ship::Console> Console, const std::vecto
     return 0;
 }
 
+// Picks a model for a directly-given ice trap to disguise itself as. In a
+// generated seed we reuse the seed's own disguise pool; outside one (e.g.
+// MultiShip / vanilla) that pool is empty, so fall back to a curated set of
+// recognizable items (all of which have ice-trap trick names).
+static RandomizerGet RandomIceTrapDisguise() {
+    const auto ctx = Rando::Context::GetInstance();
+    if (ctx && !ctx->possibleIceTrapModels.empty()) {
+        return Rando::Traps::GetTrapTrickModel();
+    }
+    static const std::vector<RandomizerGet> fallback = {
+        RG_KOKIRI_SWORD,   RG_MASTER_SWORD,   RG_BIGGORON_SWORD, RG_DEKU_SHIELD,
+        RG_HYLIAN_SHIELD,  RG_MIRROR_SHIELD,  RG_GORON_TUNIC,    RG_ZORA_TUNIC,
+        RG_IRON_BOOTS,     RG_HOVER_BOOTS,    RG_BOOMERANG,      RG_LENS_OF_TRUTH,
+        RG_MEGATON_HAMMER, RG_STONE_OF_AGONY, RG_DINS_FIRE,      RG_FARORES_WIND,
+        RG_NAYRUS_LOVE,    RG_FIRE_ARROWS,    RG_ICE_ARROWS,     RG_LIGHT_ARROWS,
+        RG_WEIRD_EGG,      RG_ZELDAS_LETTER,  RG_GERUDO_MEMBERSHIP_CARD,
+    };
+    return ShipUtils::RandomElement(fallback);
+}
+
 static bool GiveItemHandler(std::shared_ptr<Ship::Console> Console, const std::vector<std::string> args,
                             std::string* output) {
     if (args.size() < 3) {
@@ -394,6 +416,23 @@ static bool GiveItemHandler(std::shared_ptr<Ship::Console> Console, const std::v
         getItemEntry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, std::stoi(args[2]));
     } else if (args[1].compare("randomizer") == 0) {
         getItemEntry = Rando::StaticData::RetrieveItem((RandomizerGet)std::stoi(args[2])).GetGIEntry_Copy();
+
+        // A directly-given ice trap has no placement, so it would always show the
+        // default gold-rupee model. Disguise it as another item by copying that
+        // item's draw fields. The disguise model is whatever the sender set via
+        // Rando::Traps::SetNextIceTrapModel() (e.g. MultiShip), or a random
+        // fallback when nothing was given. The text is handled separately in
+        // Rando::Traps::BuildIceTrapMessage (server text override, else random).
+        if (getItemEntry.getItemId == RG_ICE_TRAP) {
+            std::optional<RandomizerGet> overrideModel = Rando::Traps::TakeNextIceTrapModel();
+            RandomizerGet model = overrideModel.has_value() ? *overrideModel : RandomIceTrapDisguise();
+            GetItemEntry fake = Rando::StaticData::RetrieveItem(model).GetGIEntry_Copy();
+            getItemEntry.gid = fake.gid;
+            getItemEntry.gi = fake.gi;
+            getItemEntry.drawItemId = fake.drawItemId;
+            getItemEntry.drawModIndex = fake.drawModIndex;
+            getItemEntry.drawFunc = fake.drawFunc;
+        }
     } else {
         ERROR_MESSAGE("[SOH] Invalid argument passed, must be 'vanilla' or 'randomizer'");
         return 1;

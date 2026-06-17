@@ -5,9 +5,18 @@
 #include <libultraship/bridge.h>
 #include <libultraship/libultraship.h>
 #include <nlohmann/json.hpp>
+#include <sstream>
+#include <vector>
 #include "soh/ShipUtils.h"
 #include "soh/ShipInit.hpp"
 #include "soh/cvar_prefixes.h"
+// randomizerTypes.h (not randomizerEnums.h) — it's #pragma once guarded, so it
+// provides RandomizerGet without re-running the unguarded X-macro enum header
+// (which would redefine every rando enum if it's already been pulled in).
+#include "soh/Enhancements/randomizer/randomizerTypes.h"
+#include "soh/Enhancements/randomizer/randomizerEnumStrings.h"
+#include "soh/Enhancements/randomizer/Traps.h"
+#include "soh/Enhancements/custom-message/CustomMessageTypes.h"
 
 extern "C" {
 extern SaveContext gSaveContext;
@@ -76,8 +85,96 @@ void MultiShip::OnConnected() {
 }
 
 void MultiShip::OnIncomingJson(nlohmann::json payload) {
-    // TODO: handle incoming messages from the MultiShip server.
     SPDLOG_INFO("[MultiShip] Received payload: \n{}", payload.dump());
+
+    // Mirrors Sail: a {"type":"command","command":"..."} packet runs that command
+    // through the SoH console, exactly as if it had been typed in-game. A result
+    // is sent back so the server can see whether it succeeded.
+    nlohmann::json response;
+    response["type"] = "result";
+    response["status"] = "failure";
+    if (payload.contains("id")) {
+        response["id"] = payload["id"];
+    }
+
+    try {
+        if (!payload.contains("type") || !payload["type"].is_string()) {
+            SPDLOG_ERROR("[MultiShip] Received payload without a type");
+            SendJsonToRemote(response);
+            return;
+        }
+
+        // Only command packets are handled for now; ignore anything else.
+        if (payload["type"].get<std::string>() != "command") {
+            return;
+        }
+
+        if (!payload.contains("command") || !payload["command"].is_string()) {
+            SPDLOG_ERROR("[MultiShip] Received command payload without a command");
+            SendJsonToRemote(response);
+            return;
+        }
+
+        std::string command = payload["command"].get<std::string>();
+
+        // The "give_item randomizer <item>" console command expects a numeric
+        // RandomizerGet id, but commands arrive with the enum NAME (e.g.
+        // RG_KOKIRI_SWORD). Translate the name to its id before dispatching so the
+        // command works (and doesn't hit give_item's unguarded std::stoi).
+        {
+            std::istringstream iss(command);
+            std::vector<std::string> tokens;
+            for (std::string tok; iss >> tok;) {
+                tokens.push_back(tok);
+            }
+            if (tokens.size() >= 3 && tokens[0] == "give_item" && tokens[1] == "randomizer") {
+                std::optional<RandomizerGet> rg = StringToEnum<RandomizerGet>(tokens[2]);
+                if (rg.has_value()) {
+                    tokens[2] = std::to_string(static_cast<int>(*rg));
+                    command.clear();
+                    for (size_t i = 0; i < tokens.size(); ++i) {
+                        if (i != 0) {
+                            command += ' ';
+                        }
+                        command += tokens[i];
+                    }
+                } else if (tokens[2].find_first_not_of("0123456789") != std::string::npos) {
+                    // Not a known RandomizerGet name and not a plain numeric id.
+                    SPDLOG_ERROR("[MultiShip] Unknown RandomizerGet item: {}", tokens[2]);
+                    SendJsonToRemote(response);
+                    return;
+                } else {
+                    // Already a numeric id.
+                    rg = static_cast<RandomizerGet>(std::stoi(tokens[2]));
+                }
+
+                // For an ice trap, stash the server-provided disguise model/text so
+                // the give path can apply them. Both are optional — a missing field
+                // falls back to a random disguise (model) / random message (text).
+                if (rg.has_value() && *rg == RG_ICE_TRAP) {
+                    if (payload.contains("iceTrapModel") && payload["iceTrapModel"].is_string()) {
+                        if (std::optional<RandomizerGet> model =
+                                StringToEnum<RandomizerGet>(payload["iceTrapModel"].get<std::string>())) {
+                            Rando::Traps::SetNextIceTrapModel(*model);
+                        }
+                    }
+                    if (payload.contains("iceTrapText") && payload["iceTrapText"].is_string()) {
+                        Rando::Traps::SetNextIceTrapText(payload["iceTrapText"].get<std::string>());
+                    }
+                }
+            }
+        }
+
+        std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
+            Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
+            ->Dispatch(command);
+
+        response["status"] = "success";
+        SendJsonToRemote(response);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("[MultiShip] Exception handling command: {}", e.what());
+        SendJsonToRemote(response);
+    }
 }
 
 void MultiShip::RegisterHooks() {
@@ -153,6 +250,27 @@ void MultiShip::RegisterHooks() {
         }
         SendJsonToRemote(payload);
     });
+
+    // Show the textbox for a server-sent ice trap. SoH only registers the
+    // TEXT_RANDOMIZER_CUSTOM_ITEM handler for randomizer seeds (IS_RANDO), so in a
+    // MultiShip game the ice trap textbox would otherwise fall back to its raw id.
+    // We register our own: when a server-provided text is pending, build the
+    // message from it. No pending text means the textbox isn't ours, so we leave
+    // it untouched.
+    GameInteractor::Instance->RegisterGameHookForID<GameInteractor::OnOpenText>(
+        TEXT_RANDOMIZER_CUSTOM_ITEM, [&](uint16_t* textId, bool* loadFromMessageTable) {
+            if (!isConnected) {
+                return;
+            }
+            std::optional<std::string> text = Rando::Traps::TakeNextIceTrapText();
+            if (!text.has_value()) {
+                return;
+            }
+            CustomMessage msg(*text, *text, *text, { QM_BLUE, QM_BLUE, QM_BLUE });
+            msg.AutoFormat();
+            *loadFromMessageTable = false;
+            msg.LoadIntoFont();
+        });
 }
 
 // Register the MultiShip game hooks once, at boot, on the main thread. By this
