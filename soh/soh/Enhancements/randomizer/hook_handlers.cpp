@@ -384,7 +384,7 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
         randomizerQueuedItemEntry = getItemEntry;
         SPDLOG_INFO("Queuing Item mod {} item {} from RC {}", getItemEntry.modIndex, getItemEntry.itemId,
                     static_cast<uint32_t>(rc));
-        if (
+        bool dropAsCollectible =
             // Skipping ItemGet animation incompatible with checks that require closing a text box to finish
             rc != RC_HF_OCARINA_OF_TIME_ITEM && rc != RC_SPIRIT_TEMPLE_SILVER_GAUNTLETS_CHEST &&
             rc != RC_MARKET_BOMBCHU_BOWLING_FIRST_PRIZE && rc != RC_MARKET_BOMBCHU_BOWLING_SECOND_PRIZE &&
@@ -399,13 +399,68 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
                   !(getItemEntry.getItemId >= RG_DEKU_TREE_MAP && getItemEntry.getItemId <= RG_ICE_CAVERN_MAP &&
                     getItemEntry.modIndex == MOD_RANDOMIZER) &&
                   (getItemCategory == ITEM_CATEGORY_JUNK || getItemCategory == ITEM_CATEGORY_SKULLTULA_TOKEN ||
-                   getItemCategory == ITEM_CATEGORY_HEALTH || getItemCategory == ITEM_CATEGORY_LESSER))))) {
+                   getItemCategory == ITEM_CATEGORY_HEALTH || getItemCategory == ITEM_CATEGORY_LESSER))));
+#ifdef ENABLE_MULTISHIP
+        // MultiShip: always use the held-over-head ItemGet animation (with its text
+        // box) — never the floor-collectible "drop" path, which is what produces the
+        // bottom-right toast. The only exception is GS tokens, which collect from the
+        // ground as in normal randomizer.
+        if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
+            dropAsCollectible = (getItemCategory == ITEM_CATEGORY_SKULLTULA_TOKEN);
+        }
+#endif
+        if (dropAsCollectible) {
             Item_DropCollectible(gPlayState, &spawnPos, static_cast<int16_t>(ITEM00_SOH_GIVE_ITEM_ENTRY | 0x8000));
         }
     }
 
     randomizerQueuedChecks.pop();
 }
+
+#ifdef ENABLE_MULTISHIP
+// Defined in soh/Network/MultiShip/MultiShip.cpp.
+int MultiShip_GetCheckOwner(int check);  // owner world of the item at `check`, -1 if unknown
+int MultiShip_GetMyWorld();              // our world index, -1 if no server seed
+
+// Foreign-item one-shot flag (declared in functions.h; consumed by z_player's
+// func_8084DFF4 to skip the inventory give for another player's item — the same
+// way ice traps skip their give while still showing the animation + textbox).
+static s32 gForeignItemOwner = -1;
+extern "C" void Randomizer_SetForeignItemGet(s32 ownerWorld) {
+    gForeignItemOwner = ownerWorld;
+}
+extern "C" s32 Randomizer_GetForeignItemOwner(void) {
+    return gForeignItemOwner;
+}
+extern "C" s32 Randomizer_ConsumeForeignItemGet(void) {
+    s32 owner = gForeignItemOwner;
+    gForeignItemOwner = -1;
+    return owner >= 0 ? 1 : 0;
+}
+
+// True only when Link is actually in-game and ready to receive an item right now:
+// no local rando item mid-delivery, not in a blocking cutscene, and not already
+// holding/getting something. The MultiShip delivery drain gates on this so server
+// items aren't handed out during loading / the spawn cutscene and don't overwrite
+// each other's get-item animation.
+extern "C" bool Randomizer_PlayerCanReceiveItem(void) {
+    if (gPlayState == NULL || !GameInteractor::IsSaveLoaded()) {
+        return false;
+    }
+    if (randomizerQueuedCheck != RC_UNKNOWN_CHECK) {
+        return false; // a locally-collected check is mid-delivery; let it finish first
+    }
+    Player* player = GET_PLAYER(gPlayState);
+    if (player == NULL || player->getItemId != GI_NONE) {
+        return false; // already receiving an item
+    }
+    if (Player_InBlockingCsMode(gPlayState, player) ||
+        (player->stateFlags1 & (PLAYER_STATE1_IN_ITEM_CS | PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_CARRYING_ACTOR))) {
+        return false;
+    }
+    return true;
+}
+#endif
 
 void RandomizerOnPlayerUpdateForItemQueueHandler() {
     if (randomizerQueuedCheck == RC_UNKNOWN_CHECK)
@@ -418,6 +473,20 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         return;
     }
 
+#ifdef ENABLE_MULTISHIP
+    // MultiShip: show the real item's get-item animation + textbox in every case (Link
+    // holds it overhead). For an item that belongs to ANOTHER player, set the foreign
+    // flag so func_8084DFF4 skips only the local inventory give (the server delivers it
+    // to its owner); the textbox is relabelled "... for <Player>" by an OnOpenText hook.
+    bool multiShipCrossWorld = false;
+    if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
+        const int owner = MultiShip_GetCheckOwner(static_cast<int>(randomizerQueuedCheck));
+        const int myWorld = MultiShip_GetMyWorld();
+        multiShipCrossWorld = (owner >= 0 && myWorld >= 0 && owner != myWorld);
+        Randomizer_SetForeignItemGet(multiShipCrossWorld ? owner : -1);
+    }
+#endif
+
     SPDLOG_INFO("Attempting to give Item mod {} item {} from RC {}", randomizerQueuedItemEntry.modIndex,
                 randomizerQueuedItemEntry.itemId, static_cast<uint32_t>(randomizerQueuedCheck));
     GiveItemEntryWithoutActor(gPlayState, randomizerQueuedItemEntry);
@@ -426,6 +495,22 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         player->stateFlags2 |= PLAYER_STATE2_UNDERWATER;
         Player_ActionHandler_2(player, gPlayState);
     }
+
+#ifdef ENABLE_MULTISHIP
+    if (multiShipCrossWorld) {
+        // The inventory give is skipped, so OnItemReceive won't fire to mark this check.
+        // Mark + report it here (SetCheckStatus -> OnRandoSetCheckStatus -> server route)
+        // and clear the queue so it isn't re-staged.
+        auto loc = Rando::Context::GetInstance()->GetItemLocation(randomizerQueuedCheck);
+        loc->SetCheckStatus(RCSHOW_COLLECTED);
+        CheckTracker::SpoilAreaFromCheck(randomizerQueuedCheck);
+        CheckTracker::RecalculateAllAreaTotals();
+        CheckTracker::RecalculateAvailableChecks();
+        SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_TRACKER_DATA, true);
+        randomizerQueuedCheck = RC_UNKNOWN_CHECK;
+        randomizerQueuedItemEntry = GET_ITEM_NONE;
+    }
+#endif
 }
 
 void RandomizerOnItemReceiveHandler(GetItemEntry receivedItemEntry) {

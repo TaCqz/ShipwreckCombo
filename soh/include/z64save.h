@@ -233,6 +233,14 @@ typedef struct ShipSaveContextData {
     u8 filenameLanguage;
     //TODO: Move non-rando specific flags to a new sohInf and move the remaining randomizerInf to ShipRandomizerSaveContextData
     u16 randomizerInf[(RAND_INF_MAX + 15) / 16];
+#ifdef ENABLE_MULTISHIP
+    // MultiShip: high-water mark of the highest server delivery seq applied + 1
+    // (i.e. the next expected seq). Kept here — not in the quest union — so it
+    // never aliases randomizer/bossRush data, and is saved in the base section
+    // atomically with the inventory: a crash rolls both back together, so on
+    // reload the client reports this and the server re-sends everything past it.
+    u32 multishipReceivedSeq;
+#endif
 } ShipSaveContextData;
 
 #pragma endregion
@@ -365,7 +373,15 @@ typedef enum {
 
 #define IS_VANILLA (gSaveContext.ship.quest.id == QUEST_NORMAL)
 #define IS_MASTER_QUEST (gSaveContext.ship.quest.id == QUEST_MASTER)
+#ifdef ENABLE_MULTISHIP
+// A MultiShip game is a randomizer world (remote multiworld), so it must take all
+// the same code paths as a rando game (check tracking, item overrides, settings).
+#define IS_RANDO                                                                                                       \
+    (gSaveContext.ship.quest.id == QUEST_RANDOMIZER || gSaveContext.ship.quest.id == QUEST_MULTISHIP)
+#define IS_MULTISHIP (gSaveContext.ship.quest.id == QUEST_MULTISHIP)
+#else
 #define IS_RANDO (gSaveContext.ship.quest.id == QUEST_RANDOMIZER)
+#endif
 #define IS_BOSS_RUSH (gSaveContext.ship.quest.id == QUEST_BOSSRUSH)
 
 typedef enum {

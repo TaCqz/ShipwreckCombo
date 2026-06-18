@@ -265,7 +265,17 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
         gSaveContext.ship.quest.id = QUEST_RANDOMIZER;
 
         Randomizer_InitSaveFile();
-    } else {
+    }
+#ifdef ENABLE_MULTISHIP
+    else if (currentQuest == QUEST_MULTISHIP) {
+        gSaveContext.ship.quest.id = QUEST_MULTISHIP;
+        // Set the file up as a default-settings randomizer world (the server
+        // overrides placements on connect). Runs a full local generation, so this
+        // takes a moment.
+        Randomizer_InitMultiShipSaveFile();
+    }
+#endif
+    else {
         gSaveContext.ship.quest.id = currentQuest;
     }
 

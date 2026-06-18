@@ -3,6 +3,7 @@
 #ifdef ENABLE_MULTISHIP
 #ifdef __cplusplus
 
+#include <atomic>
 #include <memory>
 
 #include "soh/Network/Network.h"
@@ -13,6 +14,11 @@ class MultiShip : public Network {
   private:
     // Sends an OnLoadGame packet for the currently loaded MultiShip file.
     void SendOnLoadGame();
+
+    // Set on (re)connect (network thread); consumed on the main thread in the
+    // OnGameFrameUpdate hook to re-report every already-collected check, so the
+    // server catches up on anything collected while we were disconnected.
+    std::atomic<bool> mNeedsCheckResync{ false };
 
   public:
     static MultiShip* Instance;

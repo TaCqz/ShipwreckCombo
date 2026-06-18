@@ -157,7 +157,13 @@ SaveManager::SaveManager() {
 }
 
 void SaveManager::LoadRandomizer() {
-    if (gSaveContext.ship.quest.id != QUEST_RANDOMIZER) {
+    if (gSaveContext.ship.quest.id != QUEST_RANDOMIZER
+#ifdef ENABLE_MULTISHIP
+        // A MultiShip file is a rando world too — restore its Context (settings +
+        // placements) the same way. The server refreshes placements on connect.
+        && gSaveContext.ship.quest.id != QUEST_MULTISHIP
+#endif
+    ) {
         return;
     }
 
@@ -261,7 +267,11 @@ void SaveManager::LoadRandomizer() {
 }
 
 void SaveManager::SaveRandomizer(SaveContext* saveContext, int sectionID, bool fullSave) {
-    if (saveContext->ship.quest.id != QUEST_RANDOMIZER) {
+    if (saveContext->ship.quest.id != QUEST_RANDOMIZER
+#ifdef ENABLE_MULTISHIP
+        && saveContext->ship.quest.id != QUEST_MULTISHIP
+#endif
+    ) {
         return;
     }
 
@@ -1985,6 +1995,8 @@ void SaveManager::LoadBaseVersion3() {
     if (isMultiShip) {
         gSaveContext.ship.quest.id = QUEST_MULTISHIP;
     }
+    // Missing in older/non-MultiShip saves -> defaults to 0 (nothing delivered yet).
+    SaveManager::Instance->LoadData("multishipReceivedSeq", gSaveContext.ship.multishipReceivedSeq, (u32)0);
 #endif
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
@@ -2169,6 +2181,8 @@ void SaveManager::LoadBaseVersion4() {
     if (isMultiShip) {
         gSaveContext.ship.quest.id = QUEST_MULTISHIP;
     }
+    // Missing in older/non-MultiShip saves -> defaults to 0 (nothing delivered yet).
+    SaveManager::Instance->LoadData("multishipReceivedSeq", gSaveContext.ship.multishipReceivedSeq, (u32)0);
 #endif
     SaveManager::Instance->LoadStruct("backupFW", []() {
         SaveManager::Instance->LoadStruct("pos", []() {
@@ -2343,6 +2357,8 @@ void SaveManager::SaveBase(SaveContext* saveContext, int sectionID, bool fullSav
     // would drop MultiShip files back to QUEST_NORMAL. Persist the MultiShip quest
     // explicitly so loaded files keep their gamemode.
     SaveManager::Instance->SaveData("isMultiShip", saveContext->ship.quest.id == QUEST_MULTISHIP);
+    // Saved in the base section so it's atomic with the inventory (crash-safety).
+    SaveManager::Instance->SaveData("multishipReceivedSeq", saveContext->ship.multishipReceivedSeq);
 #endif
     SaveManager::Instance->SaveStruct("backupFW", [&]() {
         SaveManager::Instance->SaveStruct("pos", [&]() {

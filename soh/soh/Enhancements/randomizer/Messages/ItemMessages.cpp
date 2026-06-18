@@ -23,6 +23,15 @@ extern "C" {
 extern PlayState* gPlayState;
 }
 
+#ifdef ENABLE_MULTISHIP
+// Defined in soh/Network/MultiShip/MultiShip.cpp — name of the player who owns the
+// item being received (used to relabel the get-item textbox "... for <name>").
+std::string MultiShip_GetPlayerName(int world);
+// Defined in soh/Enhancements/randomizer/hook_handlers.cpp — owner world of the item
+// currently being received (-1 if not a foreign MultiShip item).
+extern "C" s32 Randomizer_GetForeignItemOwner(void);
+#endif
+
 void BuildTriforcePieceMessage(CustomMessage& msg) {
     uint8_t current = gSaveContext.ship.quest.data.randomizer.triforcePiecesCollected + 1;
     uint8_t required = OTRGlobals::Instance->gRandomizer->GetRandoSettingValue(RSK_TRIFORCE_HUNT_PIECES_REQUIRED) + 1;
@@ -70,9 +79,26 @@ void BuildTriforcePieceMessage(CustomMessage& msg) {
 
 void BuildCustomItemMessage(Player* player, CustomMessage& msg) {
     int16_t rgid;
-    msg = CustomMessage("You found [[article]][[color]][[name]]%w!",
-                        "Du erhältst [[article]][[color]][[name]]%w gefunden!",
-                        "Vous avez trouvé [[article]][[color]][[name]]%w!", TEXTBOX_TYPE_BLUE);
+    // MultiShip: if the item being received belongs to another player, append
+    // "... for <name>" to the normal get-item text (the item still shows over Link's
+    // head; the inventory give is skipped in func_8084DFF4).
+    std::string engFor = "", gerFor = "", fraFor = "";
+#ifdef ENABLE_MULTISHIP
+    {
+        s32 foreignOwner = Randomizer_GetForeignItemOwner();
+        if (foreignOwner >= 0) {
+            std::string name = MultiShip_GetPlayerName(foreignOwner);
+            if (!name.empty()) {
+                engFor = " for " + name;
+                gerFor = " für " + name;
+                fraFor = " pour " + name;
+            }
+        }
+    }
+#endif
+    msg = CustomMessage("You found [[article]][[color]][[name]]%w" + engFor + "!",
+                        "Du erhältst [[article]][[color]][[name]]%w" + gerFor + " gefunden!",
+                        "Vous avez trouvé [[article]][[color]][[name]]%w" + fraFor + "!", TEXTBOX_TYPE_BLUE);
     if (player->getItemEntry.objectId != OBJECT_INVALID) {
         rgid = player->getItemEntry.getItemId;
     } else {

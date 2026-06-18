@@ -14114,8 +14114,16 @@ s32 func_8084DFF4(PlayState* play, Player* this) {
                    equipItem >= ITEM_SWORD_KOKIRI && equipItem <= ITEM_TUNIC_ZORA && CHECK_AGE_REQ_ITEM(equipItem);
 
         Message_StartTextbox(play, giEntry.textId, &this->actor);
+        // MultiShip: an item that belongs to another player shows the animation +
+        // textbox above (and the OnOpenText hook already ran), but must NOT be added to
+        // our inventory — the server delivers it to its owner. Consume the one-shot
+        // flag here, the same place ice traps skip their give just below.
+        s32 multiShipForeignItem = 0;
+#ifdef ENABLE_MULTISHIP
+        multiShipForeignItem = Randomizer_ConsumeForeignItemGet();
+#endif
         // RANDOTODO: Macro this boolean check.
-        if (!(giEntry.modIndex == MOD_RANDOMIZER && giEntry.itemId == RG_ICE_TRAP)) {
+        if (!(giEntry.modIndex == MOD_RANDOMIZER && giEntry.itemId == RG_ICE_TRAP) && !multiShipForeignItem) {
             if (giEntry.modIndex == MOD_NONE) {
                 // RANDOTOD: Move this into Item_Give() or some other more central location
                 if (giEntry.getItemId == GI_SWORD_BGS) {
