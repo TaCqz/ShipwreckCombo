@@ -426,11 +426,18 @@ int MultiShip_GetMyWorld();              // our world index, -1 if no server see
 // func_8084DFF4 to skip the inventory give for another player's item — the same
 // way ice traps skip their give while still showing the animation + textbox).
 static s32 gForeignItemOwner = -1;
+// The check (RandomizerCheck) backing the current foreign get-item textbox. Captured
+// before randomizerQueuedCheck is cleared so the textbox can resolve a disguised ice
+// trap's fake name from the rando Context override (F-004). -1 when not a foreign get.
+static s32 gForeignItemCheck = -1;
 extern "C" void Randomizer_SetForeignItemGet(s32 ownerWorld) {
     gForeignItemOwner = ownerWorld;
 }
 extern "C" s32 Randomizer_GetForeignItemOwner(void) {
     return gForeignItemOwner;
+}
+extern "C" s32 Randomizer_GetForeignItemCheck(void) {
+    return gForeignItemCheck;
 }
 extern "C" s32 Randomizer_ConsumeForeignItemGet(void) {
     s32 owner = gForeignItemOwner;
@@ -484,6 +491,9 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         const int myWorld = MultiShip_GetMyWorld();
         multiShipCrossWorld = (owner >= 0 && myWorld >= 0 && owner != myWorld);
         Randomizer_SetForeignItemGet(multiShipCrossWorld ? owner : -1);
+        // Remember the check so the get-item textbox can read this foreign item's
+        // ice-trap disguise name (the rando Context override) once the queue is cleared.
+        gForeignItemCheck = multiShipCrossWorld ? static_cast<s32>(randomizerQueuedCheck) : -1;
     }
 #endif
 

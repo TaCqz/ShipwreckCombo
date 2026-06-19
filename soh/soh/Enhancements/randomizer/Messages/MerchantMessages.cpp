@@ -18,6 +18,14 @@ extern PlayState* gPlayState;
 #include <overlays/actors/ovl_En_Dns/z_en_dns.h>
 }
 
+#ifdef ENABLE_MULTISHIP
+// Defined in soh/Network/MultiShip/MultiShip.cpp — used to label a shop item owned
+// by another world ("<name> (<PlayerName>)") in the MultiShip multiworld.
+int MultiShip_GetMyWorld();
+int MultiShip_GetCheckOwner(int check); // owning world, -1 if unknown
+std::string MultiShip_GetPlayerName(int world);
+#endif
+
 #define RAND_GET_ITEM(rc) OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)
 #define RAND_GET_OVERRIDE(rc) OTRGlobals::Instance->gRandoContext->overrides[rc]
 #define NON_BEAN_MERCHANTS                                                            \
@@ -44,6 +52,22 @@ void BuildMerchantMessage(CustomMessage& msg, RandomizerCheck rc, bool mysteriou
             itemName = item.GetHint().GetHintMessage();
         }
     }
+#ifdef ENABLE_MULTISHIP
+    // MultiShip multiworld: a shop slot can hold an item owned by the other world.
+    // Tag the name with the owner so the buyer knows who it's for ("<name> (<Player>)").
+    // Own-world items (and non-MultiShip games) are left untouched. Display only — the
+    // check's owner/price/purchase behaviour is unchanged.
+    if (IS_MULTISHIP) {
+        const int owner = MultiShip_GetCheckOwner(static_cast<int>(rc));
+        const int myWorld = MultiShip_GetMyWorld();
+        if (owner >= 0 && myWorld >= 0 && owner != myWorld) {
+            const std::string ownerName = MultiShip_GetPlayerName(owner);
+            if (!ownerName.empty()) {
+                itemName += " (" + ownerName + ")";
+            }
+        }
+    }
+#endif
     msg.Replace("[[color]]", color);
     msg.InsertNames({ itemName, CustomMessage(std::to_string(location->GetPrice())) });
 }

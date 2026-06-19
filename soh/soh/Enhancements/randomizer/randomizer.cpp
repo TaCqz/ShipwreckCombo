@@ -1003,6 +1003,9 @@ bool GenerateRandomizer(std::string seed /*= ""*/) {
 // MultiShip server sent this session (empty if not connected / none received).
 std::vector<uint8_t> MultiShip_GetServerSettings();
 std::vector<std::pair<int, int>> MultiShip_GetServerPlacements();  // (check, item)
+// Disguise the server assigned to the ice trap at `check` (model RandomizerGet +
+// fake name). Returns false if the check isn't a disguised ice trap.
+bool MultiShip_GetIceTrapDisguise(int check, int& modelRg, std::string& name);
 
 extern "C" void Randomizer_InitMultiShipSaveFile() {
     // A MultiShip file must be a valid randomizer world locally so the check/logic/
@@ -1034,8 +1037,33 @@ extern "C" void Randomizer_InitMultiShipSaveFile() {
     // local get-item display; cross-world items are routed remotely on collection).
     std::vector<std::pair<int, int>> placements = MultiShip_GetServerPlacements();
     for (const auto& pr : placements) {
-        auto loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(pr.first));
-        if (loc != nullptr) loc->SetPlacedItem(static_cast<RandomizerGet>(pr.second));
+        const auto rc = static_cast<RandomizerCheck>(pr.first);
+        auto loc = ctx->GetItemLocation(rc);
+        if (loc == nullptr) continue;
+        const auto rg = static_cast<RandomizerGet>(pr.second);
+        loc->SetPlacedItem(rg);
+        // An ice trap must STILL be an ice trap on purchase (the trap fires) — only
+        // its presentation is faked. Mirror base rando's CreateItemOverrides by
+        // recording an override here (the trap looks like the server-chosen model and
+        // shows a fake name). The existing shop rendering (Context::GetFinalGIEntry +
+        // BuildMerchantMessage's GetTrickName) and the get-item textbox (F-004) all
+        // read this single override, and SaveManager persists it per check so the
+        // disguise is stable across reloads. possibleIceTrapModels is empty in
+        // MultiShip (no local fill), so the model comes from the server, not locally.
+        if (rg == RG_ICE_TRAP) {
+            int modelRg = 0;
+            std::string fakeName;
+            if (MultiShip_GetIceTrapDisguise(pr.first, modelRg, fakeName)) {
+                const auto model = static_cast<RandomizerGet>(modelRg);
+                Rando::ItemOverride ov(rc, model);
+                ov.SetTrickName(Text{ fakeName, fakeName, fakeName });
+                ctx->overrides[rc] = ov;
+                ctx->iceTrapModels[rc] = model;
+            } else {
+                SPDLOG_WARN("[MultiShip] Ice trap at check {} has no server disguise — "
+                            "it will show as 'Ice Trap'", pr.first);
+            }
+        }
     }
     SPDLOG_INFO("[MultiShip] Applied {} server placements to the new file", placements.size());
     // Mark the seed as externally provided (like a loaded spoiler) so nothing tries

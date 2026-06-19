@@ -1079,6 +1079,7 @@ u16 Randomizer_Item_Give(PlayState* play, GetItemEntry giEntry);
 // item handler just before staging the item.
 void Randomizer_SetForeignItemGet(s32 ownerWorld); // -1 clears (normal/own item)
 s32 Randomizer_GetForeignItemOwner(void);          // peek owner world (for the textbox), -1 if none
+s32 Randomizer_GetForeignItemCheck(void);          // peek the foreign item's check (disguise lookup), -1 if none
 s32 Randomizer_ConsumeForeignItemGet(void);        // returns 1 if foreign (and clears), else 0
 #endif
 u8 Item_CheckObtainability(u8 item);

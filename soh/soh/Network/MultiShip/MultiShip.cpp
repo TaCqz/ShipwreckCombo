@@ -41,6 +41,9 @@ struct MultiShipSeed {
     std::vector<std::pair<int, int>> placements;  // (check, item)
     std::unordered_map<int, int> ownerOf;         // check -> owner world
     std::vector<std::string> players;
+    // Ice-trap disguises chosen by the server (the single source of truth, shared
+    // with the get-item textbox). check -> {model RandomizerGet name, fake item name}.
+    std::unordered_map<int, std::pair<std::string, std::string>> iceTrapDisguise;
 };
 static std::mutex gMultiShipSeedMutex;
 static MultiShipSeed gMultiShipSeed;
@@ -70,6 +73,22 @@ std::string MultiShip_GetPlayerName(int world) {
     std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
     if (world < 0 || world >= (int)gMultiShipSeed.players.size()) return "";
     return gMultiShipSeed.players[world];
+}
+// Disguise the server assigned to the ice trap at `check`. Returns true and fills
+// `modelRg` (the resolved RandomizerGet the trap looks like) and `name` (the fake
+// item name) if this check holds a disguised ice trap. This is the ONE disguise
+// source for the slot: file creation funnels it into the rando Context override so
+// the shop model/name and the get-item textbox (F-004) all read the same value.
+// The model name -> RandomizerGet resolution stays here (where StringToEnum lives).
+bool MultiShip_GetIceTrapDisguise(int check, int& modelRg, std::string& name) {
+    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
+    auto it = gMultiShipSeed.iceTrapDisguise.find(check);
+    if (it == gMultiShipSeed.iceTrapDisguise.end()) return false;
+    std::optional<RandomizerGet> rg = StringToEnum<RandomizerGet>(it->second.first);
+    if (!rg.has_value()) return false;
+    modelRg = static_cast<int>(*rg);
+    name = it->second.second;
+    return true;
 }
 
 // Pending server item deliveries. The network thread only enqueues; the main thread
@@ -213,6 +232,14 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
                     seed.placements.emplace_back(check, p["item"].get<int>());
                     if (p.contains("owner") && p["owner"].is_number_integer())
                         seed.ownerOf[check] = p["owner"].get<int>();
+                    // Ice-trap disguise (model + fake name) the server assigned to this
+                    // slot. Only present for ice-trap placements; cached for the file
+                    // creation path to apply as a Context override.
+                    if (p.contains("iceTrapModel") && p["iceTrapModel"].is_string() &&
+                        p.contains("iceTrapName") && p["iceTrapName"].is_string()) {
+                        seed.iceTrapDisguise[check] = { p["iceTrapModel"].get<std::string>(),
+                                                        p["iceTrapName"].get<std::string>() };
+                    }
                 }
             }
             {

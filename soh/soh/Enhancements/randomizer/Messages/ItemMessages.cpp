@@ -28,8 +28,10 @@ extern PlayState* gPlayState;
 // item being received (used to relabel the get-item textbox "... for <name>").
 std::string MultiShip_GetPlayerName(int world);
 // Defined in soh/Enhancements/randomizer/hook_handlers.cpp — owner world of the item
-// currently being received (-1 if not a foreign MultiShip item).
+// currently being received (-1 if not a foreign MultiShip item), and the check that
+// item came from (so a disguised ice trap can be resolved to its shop fake name).
 extern "C" s32 Randomizer_GetForeignItemOwner(void);
+extern "C" s32 Randomizer_GetForeignItemCheck(void);
 #endif
 
 void BuildTriforcePieceMessage(CustomMessage& msg) {
@@ -79,33 +81,58 @@ void BuildTriforcePieceMessage(CustomMessage& msg) {
 
 void BuildCustomItemMessage(Player* player, CustomMessage& msg) {
     int16_t rgid;
-    // MultiShip: if the item being received belongs to another player, append
-    // "... for <name>" to the normal get-item text (the item still shows over Link's
-    // head; the inventory give is skipped in func_8084DFF4).
-    std::string engFor = "", gerFor = "", fraFor = "";
+    // MultiShip: if the item being received belongs to another player, name the owner
+    // ("You found <name>'s <item>") instead of the normal get-item text (the item still
+    // shows over Link's head; the inventory give is skipped in func_8084DFF4).
+    std::string owner = "";
 #ifdef ENABLE_MULTISHIP
     {
         s32 foreignOwner = Randomizer_GetForeignItemOwner();
         if (foreignOwner >= 0) {
-            std::string name = MultiShip_GetPlayerName(foreignOwner);
-            if (!name.empty()) {
-                engFor = " for " + name;
-                gerFor = " für " + name;
-                fraFor = " pour " + name;
-            }
+            owner = MultiShip_GetPlayerName(foreignOwner);
         }
     }
 #endif
-    msg = CustomMessage("You found [[article]][[color]][[name]]%w" + engFor + "!",
-                        "Du erhältst [[article]][[color]][[name]]%w" + gerFor + " gefunden!",
-                        "Vous avez trouvé [[article]][[color]][[name]]%w" + fraFor + "!", TEXTBOX_TYPE_BLUE);
+    if (!owner.empty()) {
+        // Possessive phrasing drops the article (e.g. "You found Bob's Boomerang");
+        // French keeps the article and reads "... le Boomerang de Bob".
+        msg = CustomMessage("You found [[owner]]'s [[color]][[name]]%w!",
+                            "Du hast [[owner]]s [[color]][[name]]%w gefunden!",
+                            "Vous avez trouvé [[article]][[color]][[name]]%w de [[owner]]!", TEXTBOX_TYPE_BLUE);
+        msg.Replace("[[owner]]", std::move(owner));
+    } else {
+        msg = CustomMessage("You found [[article]][[color]][[name]]%w!",
+                            "Du erhältst [[article]][[color]][[name]]%w gefunden!",
+                            "Vous avez trouvé [[article]][[color]][[name]]%w!", TEXTBOX_TYPE_BLUE);
+    }
     if (player->getItemEntry.objectId != OBJECT_INVALID) {
         rgid = player->getItemEntry.getItemId;
     } else {
         rgid = player->getItemId;
     }
-    CustomMessage name =
-        CustomMessage(Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetName(), TEXTBOX_TYPE_BLUE);
+    CustomMessage name;
+    bool haveName = false;
+#ifdef ENABLE_MULTISHIP
+    // A foreign ice trap must read as the SAME disguise the shop shows, never "Ice Trap"
+    // (the trap fires on its owner, not here). Reuse F-002's single source of truth — the
+    // rando Context override the server funnelled the disguise into — taking its model for
+    // the article/color/icon (LooksLike) and its fake name (GetTrickName), exactly like the
+    // shop in BuildMerchantMessage.
+    if (rgid == RG_ICE_TRAP) {
+        s32 check = Randomizer_GetForeignItemCheck();
+        auto ctx = OTRGlobals::Instance->gRandoContext;
+        if (check >= 0 && ctx->overrides.contains(static_cast<RandomizerCheck>(check))) {
+            auto& ov = ctx->overrides[static_cast<RandomizerCheck>(check)];
+            rgid = ov.LooksLike();
+            name = CustomMessage(ov.GetTrickName(), TEXTBOX_TYPE_BLUE);
+            haveName = true;
+        }
+    }
+#endif
+    if (!haveName) {
+        name = CustomMessage(Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetName(),
+                             TEXTBOX_TYPE_BLUE);
+    }
     CustomMessage article = CustomMessage(
         Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetArticle(), TEXTBOX_TYPE_BLUE);
     msg.Replace("[[article]]", article);
@@ -172,7 +199,14 @@ void BuildItemMessage(u16* textId, bool* loadFromMessageTable) {
     Player* player = GET_PLAYER(gPlayState);
     CustomMessage msg;
 
-    if (player->getItemEntry.getItemId == RG_ICE_TRAP) {
+    if (player->getItemEntry.getItemId == RG_ICE_TRAP
+#ifdef ENABLE_MULTISHIP
+        // A foreign-owned ice trap fires on its OWNER, not the collector, so it must not
+        // show the troll/reveal message. Fall through to the foreign get-item textbox
+        // ("You found <Player>'s <DisguiseName>"), which resolves the disguise name (F-004).
+        && Randomizer_GetForeignItemOwner() < 0
+#endif
+    ) {
         Rando::Traps::BuildIceTrapMessage(msg, player->getItemEntry);
     } else if (player->getItemEntry.getItemId == RG_TRIFORCE_PIECE) {
         BuildTriforcePieceMessage(msg);
