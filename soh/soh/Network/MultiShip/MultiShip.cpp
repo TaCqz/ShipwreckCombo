@@ -160,6 +160,9 @@ void MultiShip::OnConnected() {
     // checks collected while we were disconnected — the server dedupes, so only the
     // genuinely-new ones route items.
     mNeedsCheckResync.store(true);
+    // Also re-apply the server settings to the live Context (main thread) so
+    // runtime-checked settings (open forest, etc.) match the server.
+    mNeedsSettingsReapply.store(true);
 }
 
 void MultiShip::OnIncomingJson(nlohmann::json payload) {
@@ -352,6 +355,10 @@ void MultiShip::RegisterHooks() {
             return;
 
         SendOnLoadGame();
+        // Re-apply the server settings to the live context once we're in-game (the
+        // OnGameFrameUpdate handler does it after LoadRandomizer), so runtime-checked
+        // settings like open forest reflect the server even on a plain load.
+        mNeedsSettingsReapply.store(true);
     });
 
     // Full check re-report after a (re)connect — the main-thread counterpart of the
@@ -401,6 +408,28 @@ void MultiShip::RegisterHooks() {
                     gDeliveryQueue.pop_front();
                 }
             }
+        }
+
+        // --- Re-apply server settings to the LIVE context --------------------------
+        // Many randomizer settings are read at runtime from the live rando Context
+        // (e.g. leaving the forest checks RSK_FOREST via VB_OPEN_KOKIRI_FOREST). This
+        // runs after LoadRandomizer has restored the save's settings, so the server's
+        // authoritative values win — fixing settings that were stale/missing when the
+        // file was created (e.g. created before the seed arrived).
+        if (mNeedsSettingsReapply.load() && isConnected &&
+            gSaveContext.ship.quest.id == QUEST_MULTISHIP && GameInteractor::IsSaveLoaded()) {
+            std::vector<uint8_t> settings = MultiShip_GetServerSettings();
+            auto ctx = Rando::Context::GetInstance();
+            if (!settings.empty() && ctx != nullptr) {
+                size_t n = settings.size();
+                if (n > static_cast<size_t>(RSK_MAX)) n = static_cast<size_t>(RSK_MAX);
+                for (size_t i = 0; i < n; i++) {
+                    ctx->GetOption(static_cast<RandomizerSettingKey>(i)).Set(settings[i]);
+                }
+                SPDLOG_INFO("[MultiShip] Re-applied {} server settings to the live context", n);
+                mNeedsSettingsReapply.store(false);
+            }
+            // If settings aren't cached yet, keep the flag and retry next frame.
         }
 
         // --- Full check re-report after a (re)connect ------------------------------

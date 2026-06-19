@@ -20,6 +20,12 @@ class MultiShip : public Network {
     // server catches up on anything collected while we were disconnected.
     std::atomic<bool> mNeedsCheckResync{ false };
 
+    // Set on (re)connect / load; consumed on the main thread to re-apply the server's
+    // settings to the live rando Context. Many settings are checked at RUNTIME (e.g.
+    // open forest via VB_OPEN_KOKIRI_FOREST reads RSK_FOREST live), so the live values
+    // must match the server even if the save baked stale ones at creation.
+    std::atomic<bool> mNeedsSettingsReapply{ false };
+
   public:
     static MultiShip* Instance;
     virtual ~MultiShip() = default;
