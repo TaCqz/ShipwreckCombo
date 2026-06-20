@@ -2,9 +2,12 @@
 	path = libultraship
 	url = https://github.com/kenix3/libultraship.git
 	branch = port-maintenance
+	ignore = dirty
 [submodule "ZAPDTR"]
 	path = ZAPDTR
 	url = https://github.com/harbourmasters/ZAPDTR
+	ignore = dirty
 [submodule "OTRExporter"]
 	path = OTRExporter
 	url = https://github.com/harbourmasters/OTRExporter
+	ignore = dirty
