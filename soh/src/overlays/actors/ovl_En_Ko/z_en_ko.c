@@ -1254,6 +1254,23 @@ void func_80A995CC(EnKo* this, PlayState* play) {
     f32 phi_f0;
     s16 homeYawToPlayer = Math_Vec3f_Yaw(&this->actor.home.pos, &player->actor.world.pos);
 
+#ifdef ENABLE_MULTISHIP
+    // MultiShip only: this boy decided to block the forest exit when its scene loaded,
+    // but the authoritative server settings (RSK_FOREST) can arrive AFTER that — and the
+    // forest is the one scene you can't leave to force a re-init. So re-check the live
+    // setting here and step aside the moment the forest becomes open, mirroring the
+    // open-forest setup path in func_80A99048 (lower the raised collider, walk to the
+    // path end, resume normal behavior). Gated on IS_MULTISHIP so standard rando — where
+    // RSK_FOREST never changes mid-scene — is untouched.
+    if (IS_MULTISHIP &&
+        GameInteractor_Should(VB_OPEN_KOKIRI_FOREST, CHECK_QUEST_ITEM(QUEST_KOKIRI_EMERALD), this)) {
+        this->collider.dim.height -= 200;
+        Path_CopyLastPoint(this->path, &this->actor.world.pos);
+        this->actionFunc = func_80A99384;
+        return;
+    }
+#endif
+
     this->actor.world.pos.x = this->actor.home.pos.x;
     this->actor.world.pos.x += 80.0f * Math_SinS(homeYawToPlayer);
     this->actor.world.pos.z = this->actor.home.pos.z;

@@ -21,6 +21,7 @@
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
 #include "soh/Enhancements/randomizer/randomizerEnumStrings.h"
 #include "soh/Enhancements/randomizer/randomizer.h"  // Rando::Context, ItemLocation
+#include "soh/Enhancements/randomizer/savefile.h"    // Randomizer_ApplyAreaAccessWorldState
 #include "soh/Enhancements/randomizer/Traps.h"
 #include "soh/Enhancements/custom-message/CustomMessageTypes.h"
 
@@ -453,10 +454,28 @@ void MultiShip::RegisterHooks() {
                 for (size_t i = 0; i < n; i++) {
                     ctx->GetOption(static_cast<RandomizerSettingKey>(i)).Set(settings[i]);
                 }
-                SPDLOG_INFO("[MultiShip] Re-applied {} server settings to the live context", n);
+                // The live values now match the server. Re-derive the one-time world-state
+                // flags (Mido/forest exit, freed Gerudo carpenters, ...) from them: those
+                // are baked at file creation and, in the connect-before-create race, were
+                // baked from the wrong settings. This is idempotent and "open"-only, so
+                // re-running it never removes earned progress. Effects that read the live
+                // Context directly (King Zora, Jabu, waterfall, the gate/Door-of-Time
+                // actors) need no re-bake — the Set() above already fixed them; they
+                // refresh the next time their scene loads.
+                Randomizer_ApplyAreaAccessWorldState();
+                SPDLOG_INFO("[MultiShip] Re-applied {} server settings to the live context "
+                            "and re-baked area-access world state", n);
                 mNeedsSettingsReapply.store(false);
+            } else {
+                // The seed packet hasn't been cached yet — keep the flag and retry. Throttled
+                // so it doesn't spam every frame; if it never clears, the server isn't sending
+                // this client its placements (usually a username/session mismatch).
+                static uint32_t waitLog = 0;
+                if ((waitLog++ % 120) == 0) {
+                    SPDLOG_WARN("[MultiShip] Settings reapply pending: server seed not cached yet "
+                                "(settings {} cached).", settings.empty() ? "NOT" : "IS");
+                }
             }
-            // If settings aren't cached yet, keep the flag and retry next frame.
         }
 
         // --- Full check re-report after a (re)connect ------------------------------
