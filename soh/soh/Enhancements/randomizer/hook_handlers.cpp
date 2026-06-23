@@ -467,6 +467,20 @@ extern "C" bool Randomizer_PlayerCanReceiveItem(void) {
     }
     return true;
 }
+
+// True once a give has actually been accepted by the player: GiveItemEntryWithoutActor
+// sets player->getItemId to the item being received. The MultiShip drain calls this
+// right after dispatching a queued give to confirm the grant landed before advancing
+// the persisted seq — GiveItemEntryWithoutActor silently rejects gives in states
+// Randomizer_PlayerCanReceiveItem doesn't cover (jumping, freefall, aiming, on a
+// ladder, holding an explosive), and a rejected give must NOT consume the delivery.
+extern "C" bool Randomizer_PlayerIsReceivingItem(void) {
+    if (gPlayState == NULL) {
+        return false;
+    }
+    Player* player = GET_PLAYER(gPlayState);
+    return player != NULL && player->getItemId != GI_NONE;
+}
 #endif
 
 void RandomizerOnPlayerUpdateForItemQueueHandler() {

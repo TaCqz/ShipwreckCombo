@@ -97,6 +97,12 @@ bool MultiShip_GetIceTrapDisguise(int check, int& modelRg, std::string& name) {
 // actually receive an item — so nothing is delivered during loading / the spawn and
 // the get-item animations don't overwrite each other.
 struct PendingDelivery {
+    // A tracked delivery is part of the server's crash-safe multiworld stream: it
+    // carries a real `seq`, is deduped against the persisted high-water mark, and
+    // advances it on grant. An untracked one is a manual GUI "Send Item" (no seq):
+    // it still drains one-at-a-time through the idle-gate + grant confirmation so it
+    // isn't lost mid-animation, but it never touches multishipReceivedSeq.
+    bool tracked = true;
     uint32_t seq = 0;
     std::string command;        // "give_item randomizer <id>"
     bool isIceTrap = false;
@@ -109,6 +115,9 @@ static std::deque<PendingDelivery> gDeliveryQueue;
 // True only when Link is in-game and ready to receive an item (defined in
 // hook_handlers.cpp, which has player access).
 extern "C" bool Randomizer_PlayerCanReceiveItem(void);
+// True once a dispatched give has actually been accepted (player->getItemId set).
+// Used to confirm a queued delivery landed before advancing the persisted seq.
+extern "C" bool Randomizer_PlayerIsReceivingItem(void);
 
 void MultiShip::Connect() {
     // The "Connect" menu button toggles the connection. The underlying Network
@@ -265,6 +274,7 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
 
         std::string command = payload["command"].get<std::string>();
         bool cmdIsIceTrap = false;
+        bool cmdIsGive = false;  // a give_item command (the only kind safe to route through the item queue)
         std::string cmdIceTrapModel, cmdIceTrapText;
 
         // The "give_item randomizer <item>" console command expects a numeric
@@ -277,6 +287,7 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             for (std::string tok; iss >> tok;) {
                 tokens.push_back(tok);
             }
+            cmdIsGive = !tokens.empty() && tokens[0] == "give_item";
             if (tokens.size() >= 3 && tokens[0] == "give_item" && tokens[1] == "randomizer") {
                 std::optional<RandomizerGet> rg = StringToEnum<RandomizerGet>(tokens[2]);
                 if (rg.has_value()) {
@@ -322,9 +333,20 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
         // advances the persisted high-water mark per actual grant.
         const bool isMultiShipItem = payload.value("multiship", false) && payload.contains("seq") &&
                                      payload["seq"].is_number_unsigned();
-        if (isMultiShipItem) {
+        // A manual GUI "Send Item" arrives as a plain give_item command (no `multiship`
+        // flag / `seq`). It still gives an item, so it must NOT be dispatched here on
+        // the network thread during loading / mid-animation — that's exactly the drop
+        // the queue exists to prevent. Route it through the SAME queue, but untracked:
+        // the main thread drains it through the idle-gate + grant confirmation so it's
+        // never lost, while it stays out of the crash-safe seq stream (no dedup, never
+        // advances multishipReceivedSeq). Non-give commands (e.g. the Teleport button's
+        // `entrance <hex>`) fall through to immediate dispatch below.
+        if (isMultiShipItem || cmdIsGive) {
             PendingDelivery d;
-            d.seq = payload["seq"].get<uint32_t>();
+            d.tracked = isMultiShipItem;
+            if (isMultiShipItem) {
+                d.seq = payload["seq"].get<uint32_t>();
+            }
             d.command = command;
             d.isIceTrap = cmdIsIceTrap;
             d.iceTrapModel = cmdIceTrapModel;
@@ -338,8 +360,8 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             return;
         }
 
-        // Manual command (e.g. the GUI "Send Item"): dispatch immediately. Apply the
-        // ice-trap disguise first, since it's consumed by the give path.
+        // Non-give command (e.g. the GUI Teleport button): dispatch immediately. Apply
+        // the ice-trap disguise first, since it's consumed by the give path.
         if (cmdIsIceTrap) {
             if (!cmdIceTrapModel.empty()) {
                 if (std::optional<RandomizerGet> m = StringToEnum<RandomizerGet>(cmdIceTrapModel)) {
@@ -413,9 +435,23 @@ void MultiShip::RegisterHooks() {
                 }
             }
             if (have) {
-                // Skip an already-applied re-send; otherwise grant it and advance the
-                // persisted high-water mark (saved atomically with the inventory).
-                if (d.seq >= gSaveContext.ship.multishipReceivedSeq) {
+                if (d.tracked && d.seq < gSaveContext.ship.multishipReceivedSeq) {
+                    // Already-applied re-send (crash catch-up): drop it without re-granting.
+                    std::lock_guard<std::mutex> lk(gDeliveryMutex);
+                    if (!gDeliveryQueue.empty()) {
+                        gDeliveryQueue.pop_front();
+                    }
+                } else {
+                    // A fresh delivery. Apply the ice-trap disguise (consumed by the give
+                    // path), then dispatch the give. We only advance the persisted seq and
+                    // pop the queue AFTER confirming the give was actually accepted —
+                    // GiveItemEntryWithoutActor silently rejects gives in states the ready
+                    // gate above doesn't cover (jumping, freefall, aiming, ladders, holding
+                    // an explosive). On rejection the item stays at the front of the queue
+                    // and we retry next ready frame, so no delivery is ever lost and the
+                    // seq never over-counts. The disguise is re-applied each attempt (the
+                    // model is consumed-and-discarded on a failed give; re-setting the same
+                    // value is idempotent because we always retry the same front item).
                     if (d.isIceTrap) {
                         if (!d.iceTrapModel.empty()) {
                             if (std::optional<RandomizerGet> m = StringToEnum<RandomizerGet>(d.iceTrapModel)) {
@@ -429,11 +465,17 @@ void MultiShip::RegisterHooks() {
                     std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
                         Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
                         ->Dispatch(d.command);
-                    gSaveContext.ship.multishipReceivedSeq = d.seq + 1;
-                }
-                std::lock_guard<std::mutex> lk(gDeliveryMutex);
-                if (!gDeliveryQueue.empty()) {
-                    gDeliveryQueue.pop_front();
+                    if (Randomizer_PlayerIsReceivingItem()) {
+                        // Only a tracked multiworld delivery advances the persisted
+                        // high-water mark; an untracked manual send leaves it untouched.
+                        if (d.tracked) {
+                            gSaveContext.ship.multishipReceivedSeq = d.seq + 1;
+                        }
+                        std::lock_guard<std::mutex> lk(gDeliveryMutex);
+                        if (!gDeliveryQueue.empty()) {
+                            gDeliveryQueue.pop_front();
+                        }
+                    }
                 }
             }
         }
