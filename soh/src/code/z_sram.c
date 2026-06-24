@@ -265,23 +265,15 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
         gSaveContext.ship.quest.id = QUEST_RANDOMIZER;
 
         Randomizer_InitSaveFile();
-    }
-#ifdef ENABLE_MULTISHIP
-    else if (currentQuest == QUEST_MULTISHIP) {
-        gSaveContext.ship.quest.id = QUEST_MULTISHIP;
-        // Set the file up as a default-settings randomizer world (the server
-        // overrides placements on connect). Runs a full local generation, so this
-        // takes a moment.
-        Randomizer_InitMultiShipSaveFile();
-    }
-#endif
-    else {
+    } else {
         gSaveContext.ship.quest.id = currentQuest;
     }
 
 #ifdef ENABLE_MULTISHIP
-    // MultiShip files skip the opening intro cutscene, the same way the debug
-    // save does above (cutsceneIndex 0 spawns Link directly at his house).
+    // MultiShip files skip the opening intro cutscene, the same way the debug save
+    // does above (cutsceneIndex 0 spawns Link directly in his house). Without this,
+    // a new MultiShip file plays the full intro, during which the player can't
+    // receive items, so server gives would queue but never deliver until it ended.
     if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
         gSaveContext.cutsceneIndex = 0;
     }

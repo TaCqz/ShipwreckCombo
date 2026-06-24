@@ -157,13 +157,7 @@ SaveManager::SaveManager() {
 }
 
 void SaveManager::LoadRandomizer() {
-    if (gSaveContext.ship.quest.id != QUEST_RANDOMIZER
-#ifdef ENABLE_MULTISHIP
-        // A MultiShip file is a rando world too — restore its Context (settings +
-        // placements) the same way. The server refreshes placements on connect.
-        && gSaveContext.ship.quest.id != QUEST_MULTISHIP
-#endif
-    ) {
+    if (gSaveContext.ship.quest.id != QUEST_RANDOMIZER) {
         return;
     }
 
@@ -267,11 +261,7 @@ void SaveManager::LoadRandomizer() {
 }
 
 void SaveManager::SaveRandomizer(SaveContext* saveContext, int sectionID, bool fullSave) {
-    if (saveContext->ship.quest.id != QUEST_RANDOMIZER
-#ifdef ENABLE_MULTISHIP
-        && saveContext->ship.quest.id != QUEST_MULTISHIP
-#endif
-    ) {
+    if (saveContext->ship.quest.id != QUEST_RANDOMIZER) {
         return;
     }
 

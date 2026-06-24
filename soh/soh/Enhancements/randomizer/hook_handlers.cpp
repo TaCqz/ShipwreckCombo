@@ -384,7 +384,7 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
         randomizerQueuedItemEntry = getItemEntry;
         SPDLOG_INFO("Queuing Item mod {} item {} from RC {}", getItemEntry.modIndex, getItemEntry.itemId,
                     static_cast<uint32_t>(rc));
-        bool dropAsCollectible =
+        if (
             // Skipping ItemGet animation incompatible with checks that require closing a text box to finish
             rc != RC_HF_OCARINA_OF_TIME_ITEM && rc != RC_SPIRIT_TEMPLE_SILVER_GAUNTLETS_CHEST &&
             rc != RC_MARKET_BOMBCHU_BOWLING_FIRST_PRIZE && rc != RC_MARKET_BOMBCHU_BOWLING_SECOND_PRIZE &&
@@ -399,17 +399,7 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
                   !(getItemEntry.getItemId >= RG_DEKU_TREE_MAP && getItemEntry.getItemId <= RG_ICE_CAVERN_MAP &&
                     getItemEntry.modIndex == MOD_RANDOMIZER) &&
                   (getItemCategory == ITEM_CATEGORY_JUNK || getItemCategory == ITEM_CATEGORY_SKULLTULA_TOKEN ||
-                   getItemCategory == ITEM_CATEGORY_HEALTH || getItemCategory == ITEM_CATEGORY_LESSER))));
-#ifdef ENABLE_MULTISHIP
-        // MultiShip: always use the held-over-head ItemGet animation (with its text
-        // box) — never the floor-collectible "drop" path, which is what produces the
-        // bottom-right toast. The only exception is GS tokens, which collect from the
-        // ground as in normal randomizer.
-        if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
-            dropAsCollectible = (getItemCategory == ITEM_CATEGORY_SKULLTULA_TOKEN);
-        }
-#endif
-        if (dropAsCollectible) {
+                   getItemCategory == ITEM_CATEGORY_HEALTH || getItemCategory == ITEM_CATEGORY_LESSER))))) {
             Item_DropCollectible(gPlayState, &spawnPos, static_cast<int16_t>(ITEM00_SOH_GIVE_ITEM_ENTRY | 0x8000));
         }
     }
@@ -418,38 +408,14 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
 }
 
 #ifdef ENABLE_MULTISHIP
-// Defined in soh/Network/MultiShip/MultiShip.cpp.
-int MultiShip_GetCheckOwner(int check);  // owner world of the item at `check`, -1 if unknown
-int MultiShip_GetMyWorld();              // our world index, -1 if no server seed
-
-// Foreign-item one-shot flag (declared in functions.h; consumed by z_player's
-// func_8084DFF4 to skip the inventory give for another player's item — the same
-// way ice traps skip their give while still showing the animation + textbox).
-static s32 gForeignItemOwner = -1;
-// The check (RandomizerCheck) backing the current foreign get-item textbox. Captured
-// before randomizerQueuedCheck is cleared so the textbox can resolve a disguised ice
-// trap's fake name from the rando Context override (F-004). -1 when not a foreign get.
-static s32 gForeignItemCheck = -1;
-extern "C" void Randomizer_SetForeignItemGet(s32 ownerWorld) {
-    gForeignItemOwner = ownerWorld;
-}
-extern "C" s32 Randomizer_GetForeignItemOwner(void) {
-    return gForeignItemOwner;
-}
-extern "C" s32 Randomizer_GetForeignItemCheck(void) {
-    return gForeignItemCheck;
-}
-extern "C" s32 Randomizer_ConsumeForeignItemGet(void) {
-    s32 owner = gForeignItemOwner;
-    gForeignItemOwner = -1;
-    return owner >= 0 ? 1 : 0;
-}
-
-// True only when Link is actually in-game and ready to receive an item right now:
-// no local rando item mid-delivery, not in a blocking cutscene, and not already
-// holding/getting something. The MultiShip delivery drain gates on this so server
-// items aren't handed out during loading / the spawn cutscene and don't overwrite
-// each other's get-item animation.
+// True when Link is in-game and able to START receiving an item right now. The MultiShip
+// delivery drain (MultiShip.cpp) gates on this and re-ATTEMPTS the give every frame this
+// is true (exactly like SoH's own randomizer item delivery,
+// RandomizerOnPlayerUpdateForItemQueueHandler) until OnItemReceive confirms the item
+// landed. Crucially this does NOT check player->getItemId: a give can stage getItemId but
+// fail to turn into an actual get-item (the staged item strands), and we must be allowed to
+// re-issue it on the next frame instead of giving up. An in-PROGRESS get-item is still
+// excluded via PLAYER_STATE1_GETTING_ITEM below, so re-attempts never interrupt one.
 extern "C" bool Randomizer_PlayerCanReceiveItem(void) {
     if (gPlayState == NULL || !GameInteractor::IsSaveLoaded()) {
         return false;
@@ -458,28 +424,69 @@ extern "C" bool Randomizer_PlayerCanReceiveItem(void) {
         return false; // a locally-collected check is mid-delivery; let it finish first
     }
     Player* player = GET_PLAYER(gPlayState);
-    if (player == NULL || player->getItemId != GI_NONE) {
-        return false; // already receiving an item
+    if (player == NULL) {
+        return false;
     }
     if (Player_InBlockingCsMode(gPlayState, player) ||
         (player->stateFlags1 & (PLAYER_STATE1_IN_ITEM_CS | PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_CARRYING_ACTOR))) {
         return false;
     }
+    // Don't deliver while Link is frozen by an ice trap (the frozen action sets
+    // PLAYER_STATE2_FROZEN on stateFlags2). Without this, a burst of ice traps would
+    // deliver the next one INTO the freeze and lose it.
+    if (player->stateFlags2 & PLAYER_STATE2_FROZEN) {
+        return false;
+    }
+    // A just-delivered ice trap stages a DEFERRED freeze: its get-item finalization
+    // increments pendingIceTrapCount and clears getItemId, but the freeze itself is
+    // applied a frame or two later by the get-item-process short-circuit
+    // (VB_SHORT_CIRCUIT_GIVE_ITEM_PROCESS, see ExtraTraps.cpp). In that window getItemId
+    // is already GI_NONE, so without this guard the drain would deliver the NEXT item and
+    // the short-circuit would consume THAT delivery as the freeze instead — losing the
+    // item and stalling the queue. Wait until the pending freeze has been applied. It's
+    // consumed passively every frame by the idle action handler (func_80842964), so this
+    // can't deadlock.
+    if (gSaveContext.ship.pendingIceTrapCount > 0) {
+        return false;
+    }
     return true;
 }
 
-// True once a give has actually been accepted by the player: GiveItemEntryWithoutActor
-// sets player->getItemId to the item being received. The MultiShip drain calls this
-// right after dispatching a queued give to confirm the grant landed before advancing
-// the persisted seq — GiveItemEntryWithoutActor silently rejects gives in states
-// Randomizer_PlayerCanReceiveItem doesn't cover (jumping, freefall, aiming, on a
-// ladder, holding an explosive), and a rejected give must NOT consume the delivery.
-extern "C" bool Randomizer_PlayerIsReceivingItem(void) {
-    if (gPlayState == NULL) {
-        return false;
+// Diagnostic: logs WHY Randomizer_PlayerCanReceiveItem() is currently returning false.
+// The MultiShip drain calls this (throttled) when an item is queued but can't be
+// delivered, so the cause of a stall is visible in the log instead of guessed at.
+extern "C" void Randomizer_LogReceiveBlockReason(void) {
+    if (gPlayState == NULL) { SPDLOG_INFO("[MultiShip] can't receive: gPlayState NULL"); return; }
+    if (!GameInteractor::IsSaveLoaded()) { SPDLOG_INFO("[MultiShip] can't receive: save not loaded"); return; }
+    if (randomizerQueuedCheck != RC_UNKNOWN_CHECK) {
+        SPDLOG_INFO("[MultiShip] can't receive: rando check {} mid-delivery", static_cast<int>(randomizerQueuedCheck));
+        return;
     }
     Player* player = GET_PLAYER(gPlayState);
-    return player != NULL && player->getItemId != GI_NONE;
+    if (player == NULL) { SPDLOG_INFO("[MultiShip] can't receive: player NULL"); return; }
+    SPDLOG_INFO("[MultiShip] can't receive: getItemId={} stateFlags1=0x{:X} stateFlags2=0x{:X} "
+                "blockingCs={} inItemCs={} gettingItem={} carrying={} frozen={} pendingIceTrap={}",
+                static_cast<int>(player->getItemId), player->stateFlags1, player->stateFlags2,
+                static_cast<int>(Player_InBlockingCsMode(gPlayState, player)),
+                static_cast<int>((player->stateFlags1 & PLAYER_STATE1_IN_ITEM_CS) != 0),
+                static_cast<int>((player->stateFlags1 & PLAYER_STATE1_GETTING_ITEM) != 0),
+                static_cast<int>((player->stateFlags1 & PLAYER_STATE1_CARRYING_ACTOR) != 0),
+                static_cast<int>((player->stateFlags2 & PLAYER_STATE2_FROZEN) != 0),
+                gSaveContext.ship.pendingIceTrapCount);
+}
+
+// Resolves the RandomizerGet `rgId` (the item a queued MultiShip give hands out) to the
+// (modIndex, getItemId) the player will actually receive, so the drain can match it on the
+// OnItemReceive hook and pop the right delivery (mirrors RandomizerOnItemReceiveHandler's
+// modIndex+itemId match). Examples: RG_ICE_TRAP -> (MOD_RANDOMIZER, RG_ICE_TRAP);
+// RG_HUGE_RUPEE -> (MOD_NONE, GI_RUPEE_GOLD). IMPORTANT: for a PROGRESSIVE item this
+// resolves against the CURRENT inventory, so the drain must call it BEFORE the give (the
+// pre-give inventory) and remember the result — re-resolving after receipt would yield the
+// next tier (inventory changed) and never match.
+extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId) {
+    GetItemEntry e = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgId)).GetGIEntry_Copy();
+    *outModIndex = static_cast<int>(e.modIndex);
+    *outGetItemId = static_cast<int>(e.getItemId);
 }
 #endif
 
@@ -494,23 +501,6 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         return;
     }
 
-#ifdef ENABLE_MULTISHIP
-    // MultiShip: show the real item's get-item animation + textbox in every case (Link
-    // holds it overhead). For an item that belongs to ANOTHER player, set the foreign
-    // flag so func_8084DFF4 skips only the local inventory give (the server delivers it
-    // to its owner); the textbox is relabelled "... for <Player>" by an OnOpenText hook.
-    bool multiShipCrossWorld = false;
-    if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
-        const int owner = MultiShip_GetCheckOwner(static_cast<int>(randomizerQueuedCheck));
-        const int myWorld = MultiShip_GetMyWorld();
-        multiShipCrossWorld = (owner >= 0 && myWorld >= 0 && owner != myWorld);
-        Randomizer_SetForeignItemGet(multiShipCrossWorld ? owner : -1);
-        // Remember the check so the get-item textbox can read this foreign item's
-        // ice-trap disguise name (the rando Context override) once the queue is cleared.
-        gForeignItemCheck = multiShipCrossWorld ? static_cast<s32>(randomizerQueuedCheck) : -1;
-    }
-#endif
-
     SPDLOG_INFO("Attempting to give Item mod {} item {} from RC {}", randomizerQueuedItemEntry.modIndex,
                 randomizerQueuedItemEntry.itemId, static_cast<uint32_t>(randomizerQueuedCheck));
     GiveItemEntryWithoutActor(gPlayState, randomizerQueuedItemEntry);
@@ -519,22 +509,6 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         player->stateFlags2 |= PLAYER_STATE2_UNDERWATER;
         Player_ActionHandler_2(player, gPlayState);
     }
-
-#ifdef ENABLE_MULTISHIP
-    if (multiShipCrossWorld) {
-        // The inventory give is skipped, so OnItemReceive won't fire to mark this check.
-        // Mark + report it here (SetCheckStatus -> OnRandoSetCheckStatus -> server route)
-        // and clear the queue so it isn't re-staged.
-        auto loc = Rando::Context::GetInstance()->GetItemLocation(randomizerQueuedCheck);
-        loc->SetCheckStatus(RCSHOW_COLLECTED);
-        CheckTracker::SpoilAreaFromCheck(randomizerQueuedCheck);
-        CheckTracker::RecalculateAllAreaTotals();
-        CheckTracker::RecalculateAvailableChecks();
-        SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_TRACKER_DATA, true);
-        randomizerQueuedCheck = RC_UNKNOWN_CHECK;
-        randomizerQueuedItemEntry = GET_ITEM_NONE;
-    }
-#endif
 }
 
 void RandomizerOnItemReceiveHandler(GetItemEntry receivedItemEntry) {

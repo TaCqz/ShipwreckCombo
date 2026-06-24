@@ -237,76 +237,6 @@ void SetStartingItems() {
     }
 }
 
-// Bakes the one-time world-state flags for the open-world / "area access" settings.
-// Split out of Randomizer_InitSaveFile so it can be re-run after the fact: in MultiShip
-// the authoritative server settings can arrive AFTER the file was created (the
-// connect-before-create race), and the live-context settings reapply alone doesn't fix
-// effects that are baked as event/scene flags at creation — the Mido/Kokiri-boy block
-// on the forest exit and the freed Gerudo carpenters. Re-running this once the synced
-// settings are known re-derives those flags from the live Context.
-//
-// Every write here is idempotent and "open"-only (it sets progress/scene-switch bits,
-// or unsets the now-unneeded Zelda's-letter trade step), so calling it repeatedly — and
-// after the player is already in-game — never removes earned progress. The one non-flag
-// effect (handing out the Gerudo card under Carpenters Free) is guarded so it can't be
-// granted twice.
-//
-// Note: Zora's Fountain, Sleeping Waterfall and Jabu-Jabu have no init-baked flags —
-// their open state is read live from the Context by their actors / VB hooks, so the
-// settings reapply already corrects them and they need no re-bake here.
-extern "C" void Randomizer_ApplyAreaAccessWorldState() {
-    // Kokiri Forest open (or deku-only): pre-satisfy Mido so neither he nor the Kokiri
-    // boy block the forest exit before the Deku Tree is beaten.
-    if (Randomizer_GetSettingValue(RSK_FOREST) == RO_CLOSED_FOREST_OFF) {
-        Flags_SetEventChkInf(EVENTCHKINF_SHOWED_MIDO_SWORD_SHIELD);
-        Flags_SetEventChkInf(EVENTCHKINF_SPOKE_TO_MIDO_AFTER_DEKU_TREES_DEATH);
-    }
-
-    if (Randomizer_GetSettingValue(RSK_DOOR_OF_TIME) == RO_DOOROFTIME_OPEN) {
-        Flags_SetEventChkInf(EVENTCHKINF_OPENED_THE_DOOR_OF_TIME);
-    }
-
-    if (Randomizer_GetSettingValue(RSK_KAK_GATE) == RO_KAK_GATE_OPEN) {
-        Flags_SetInfTable(INFTABLE_SHOWED_ZELDAS_LETTER_TO_GATE_GUARD);
-        Flags_UnsetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_LETTER_ZELDA);
-    }
-
-    if (Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FAST ||
-        Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FREE) {
-        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(1));
-        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(2));
-        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(3));
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x02); // heard yells and unlocked doors
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x03);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x04);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x06);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x07);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x08);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x10);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x12);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x13);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0A); // picked up keys
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0E);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0F);
-    }
-
-    if (Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FREE) {
-        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(0));
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x01); // heard yell and unlocked door
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x05);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x11);
-        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0C); // picked up key
-
-        Flags_SetRandomizerInf(RAND_INF_TH_ITEM_FROM_LEADER_OF_FORTRESS);
-        // Guard the grant so a re-run (e.g. MultiShip late-arriving settings) can't hand
-        // out a second Gerudo card.
-        if (!Randomizer_GetSettingValue(RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD) &&
-            !CHECK_QUEST_ITEM(QUEST_GERUDO_CARD)) {
-            Item_Give(NULL, ITEM_GERUDO_CARD);
-        }
-    }
-}
-
 extern "C" void Randomizer_InitSaveFile() {
     auto ctx = Rando::Context::GetInstance();
     ctx->GetLogic()->SetSaveContext(&gSaveContext);
@@ -329,6 +259,11 @@ extern "C" void Randomizer_InitSaveFile() {
     Flags_SetEventChkInf(EVENTCHKINF_RENTED_HORSE_FROM_INGO);
     Flags_SetInfTable(INFTABLE_SPOKE_TO_POE_COLLECTOR_IN_RUINED_MARKET);
     Flags_SetEventChkInf(EVENTCHKINF_WATCHED_GANONS_CASTLE_COLLAPSE_CAUGHT_BY_GERUDO);
+
+    if (Randomizer_GetSettingValue(RSK_FOREST) == RO_CLOSED_FOREST_OFF) {
+        Flags_SetEventChkInf(EVENTCHKINF_SHOWED_MIDO_SWORD_SHIELD);
+        Flags_SetEventChkInf(EVENTCHKINF_SPOKE_TO_MIDO_AFTER_DEKU_TREES_DEATH);
+    }
 
     // Go away Ruto (Water Temple first cutscene).
     gSaveContext.sceneFlags[SCENE_WATER_TEMPLE].swch |= (1 << 0x10);
@@ -506,10 +441,49 @@ extern "C" void Randomizer_InitSaveFile() {
         gSaveContext.sceneFlags[SCENE_WATER_TEMPLE].swch |= (1 << 0x15);
     }
 
-    // Bake the one-time world-state flags for the open-world / area-access settings
-    // (forest, Door of Time, Kakariko gate, Gerudo fortress). Factored out so MultiShip
-    // can re-run it when the authoritative server settings arrive after file creation.
-    Randomizer_ApplyAreaAccessWorldState();
+    int doorOfTime = Randomizer_GetSettingValue(RSK_DOOR_OF_TIME);
+    switch (doorOfTime) {
+        case RO_DOOROFTIME_OPEN:
+            Flags_SetEventChkInf(EVENTCHKINF_OPENED_THE_DOOR_OF_TIME);
+            break;
+    }
+
+    if (Randomizer_GetSettingValue(RSK_KAK_GATE) == RO_KAK_GATE_OPEN) {
+        Flags_SetInfTable(INFTABLE_SHOWED_ZELDAS_LETTER_TO_GATE_GUARD);
+        Flags_UnsetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_LETTER_ZELDA);
+    }
+
+    if (Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FAST ||
+        Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FREE) {
+        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(1));
+        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(2));
+        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(3));
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x02); // heard yells and unlocked doors
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x03);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x04);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x06);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x07);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x08);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x10);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x12);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x13);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0A); // picked up keys
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0E);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0F);
+    }
+
+    if (Randomizer_GetSettingValue(RSK_GERUDO_FORTRESS) == RO_GF_CARPENTERS_FREE) {
+        Flags_SetEventChkInf(EVENTCHKINF_CARPENTERS_FREE(0));
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x01); // heard yell and unlocked door
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x05);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].swch |= (1 << 0x11);
+        gSaveContext.sceneFlags[SCENE_THIEVES_HIDEOUT].collect |= (1 << 0x0C); // picked up key
+
+        Flags_SetRandomizerInf(RAND_INF_TH_ITEM_FROM_LEADER_OF_FORTRESS);
+        if (!Randomizer_GetSettingValue(RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD)) {
+            Item_Give(NULL, ITEM_GERUDO_CARD);
+        }
+    }
 
     // complete mask quest
     if (Randomizer_GetSettingValue(RSK_MASK_QUEST) == RO_MASK_QUEST_COMPLETED) {

@@ -7,10 +7,9 @@
 #include <nlohmann/json.hpp>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 #include "soh/ShipUtils.h"
 #include "soh/ShipInit.hpp"
@@ -20,104 +19,53 @@
 // (which would redefine every rando enum if it's already been pulled in).
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
 #include "soh/Enhancements/randomizer/randomizerEnumStrings.h"
-#include "soh/Enhancements/randomizer/randomizer.h"  // Rando::Context, ItemLocation
-#include "soh/Enhancements/randomizer/savefile.h"    // Randomizer_ApplyAreaAccessWorldState
-#include "soh/Enhancements/randomizer/Traps.h"
-#include "soh/Enhancements/custom-message/CustomMessageTypes.h"
+#include "soh/Enhancements/custom-message/CustomMessageTypes.h"  // TEXT_RANDOMIZER_CUSTOM_ITEM
 
 extern "C" {
 extern SaveContext gSaveContext;
 }
 
-// The seed the connected MultiShip server sent this session: the per-RSK settings,
-// this world's placements (check -> item) + per-check owner world, the player names,
-// our world index, and the seed value. Populated from the network thread (parse only,
-// no Context access); consumed on the main thread (file creation + the grant handler),
-// so it's mutex-guarded.
-struct MultiShipSeed {
-    bool valid = false;
-    int world = -1;
-    uint32_t seed = 0;
-    std::vector<uint8_t> settings;
-    std::vector<std::pair<int, int>> placements;  // (check, item)
-    std::unordered_map<int, int> ownerOf;         // check -> owner world
-    std::vector<std::string> players;
-    // Ice-trap disguises chosen by the server (the single source of truth, shared
-    // with the get-item textbox). check -> {model RandomizerGet name, fake item name}.
-    std::unordered_map<int, std::pair<std::string, std::string>> iceTrapDisguise;
-};
-static std::mutex gMultiShipSeedMutex;
-static MultiShipSeed gMultiShipSeed;
-
-// Accessors used by randomizer.cpp (file creation) and hook_handlers.cpp (grant
-// routing). All thread-safe copies / lookups.
-std::vector<uint8_t> MultiShip_GetServerSettings() {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    return gMultiShipSeed.settings;
-}
-std::vector<std::pair<int, int>> MultiShip_GetServerPlacements() {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    return gMultiShipSeed.placements;
-}
-int MultiShip_GetMyWorld() {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    return gMultiShipSeed.world;
-}
-// Owner world of the item at `check` (-1 if unknown). Used to tell own-world items
-// (granted locally) from cross-world ones (sent to another player via the server).
-int MultiShip_GetCheckOwner(int check) {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    auto it = gMultiShipSeed.ownerOf.find(check);
-    return it == gMultiShipSeed.ownerOf.end() ? -1 : it->second;
-}
-std::string MultiShip_GetPlayerName(int world) {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    if (world < 0 || world >= (int)gMultiShipSeed.players.size()) return "";
-    return gMultiShipSeed.players[world];
-}
-// Disguise the server assigned to the ice trap at `check`. Returns true and fills
-// `modelRg` (the resolved RandomizerGet the trap looks like) and `name` (the fake
-// item name) if this check holds a disguised ice trap. This is the ONE disguise
-// source for the slot: file creation funnels it into the rando Context override so
-// the shop model/name and the get-item textbox (F-004) all read the same value.
-// The model name -> RandomizerGet resolution stays here (where StringToEnum lives).
-bool MultiShip_GetIceTrapDisguise(int check, int& modelRg, std::string& name) {
-    std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-    auto it = gMultiShipSeed.iceTrapDisguise.find(check);
-    if (it == gMultiShipSeed.iceTrapDisguise.end()) return false;
-    std::optional<RandomizerGet> rg = StringToEnum<RandomizerGet>(it->second.first);
-    if (!rg.has_value()) return false;
-    modelRg = static_cast<int>(*rg);
-    name = it->second.second;
-    return true;
-}
+// SoH's get-item textbox builder for randomizer items (defined in
+// Enhancements/randomizer/Messages/ItemMessages.cpp). It reads the item being
+// received from the player and builds a "You found X!" message inline from the
+// static item catalog — no generated seed / live rando Context needed. SoH only
+// auto-registers it for IS_RANDO seeds; a MultiShip game is NOT IS_RANDO, so we
+// register it ourselves (below) for delivered items. Not declared in a header.
+void BuildItemMessage(uint16_t* textId, bool* loadFromMessageTable);
 
 // Pending server item deliveries. The network thread only enqueues; the main thread
 // (OnGameFrameUpdate) hands them out one at a time, and only while the player can
 // actually receive an item — so nothing is delivered during loading / the spawn and
 // the get-item animations don't overwrite each other.
 struct PendingDelivery {
-    // A tracked delivery is part of the server's crash-safe multiworld stream: it
-    // carries a real `seq`, is deduped against the persisted high-water mark, and
-    // advances it on grant. An untracked one is a manual GUI "Send Item" (no seq):
-    // it still drains one-at-a-time through the idle-gate + grant confirmation so it
-    // isn't lost mid-animation, but it never touches multishipReceivedSeq.
+    // A tracked delivery is part of the server's crash-safe stream: it carries a real
+    // `seq`, is deduped against the persisted high-water mark, and advances it on grant.
+    // An untracked one is a manual GUI "Send Item" (no seq): it still drains one-at-a-time
+    // through the idle-gate + grant confirmation so it isn't lost mid-animation, but it
+    // never touches multishipReceivedSeq.
     bool tracked = true;
     uint32_t seq = 0;
-    std::string command;        // "give_item randomizer <id>"
-    bool isIceTrap = false;
-    std::string iceTrapModel;   // RG_* name, optional
-    std::string iceTrapText;    // optional
+    std::string command;  // "give_item randomizer <id>"
+    int rgId = -1;        // the RandomizerGet id this give hands out (for OnItemReceive match)
+    // The (modIndex, getItemId) the give will actually grant, resolved ONCE on the first
+    // delivery attempt (pre-give inventory) so progressive items match correctly on receipt.
+    // -1 until resolved.
+    int expectModIndex = -1;
+    int expectGetItemId = -1;
 };
 static std::mutex gDeliveryMutex;
 static std::deque<PendingDelivery> gDeliveryQueue;
 
-// True only when Link is in-game and ready to receive an item (defined in
-// hook_handlers.cpp, which has player access).
+// True when Link is in-game and able to START a get-item (defined in hook_handlers.cpp,
+// which has player access). Does NOT check getItemId, so the drain can re-attempt a give
+// that staged but stranded; an in-progress get-item is still excluded.
 extern "C" bool Randomizer_PlayerCanReceiveItem(void);
-// True once a dispatched give has actually been accepted (player->getItemId set).
-// Used to confirm a queued delivery landed before advancing the persisted seq.
-extern "C" bool Randomizer_PlayerIsReceivingItem(void);
+// Resolves the item a queued give hands out to (modIndex, getItemId) so the drain can
+// match it on OnItemReceive. Must be called BEFORE the give (pre-give inventory) for
+// progressive items to resolve to the tier that will actually be received.
+extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId);
+// Diagnostic: logs why the player currently can't receive an item (stall debugging).
+extern "C" void Randomizer_LogReceiveBlockReason(void);
 
 void MultiShip::Connect() {
     // The "Connect" menu button toggles the connection. The underlying Network
@@ -137,8 +85,7 @@ void MultiShip::Connect() {
 
 void MultiShip::SendJsonToRemote(nlohmann::json packet) {
     // Attach the player's name to every packet (not just the handshake) so the
-    // server can attribute any message — e.g. which player collected an item —
-    // regardless of packet ordering or reconnects.
+    // server can attribute any message regardless of packet ordering or reconnects.
     packet["userName"] = CVarGetString(CVAR_REMOTE_MULTISHIP("UserName"), "");
     Network::SendJsonToRemote(packet);
 }
@@ -183,15 +130,6 @@ void MultiShip::OnConnected() {
     if (GameInteractor::IsSaveLoaded() && gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
         SendOnLoadGame();
     }
-
-    // Request a full check re-report on the main thread (we can't safely read the
-    // rando Context from this network thread). This catches the server up on any
-    // checks collected while we were disconnected — the server dedupes, so only the
-    // genuinely-new ones route items.
-    mNeedsCheckResync.store(true);
-    // Also re-apply the server settings to the live Context (main thread) so
-    // runtime-checked settings (open forest, etc.) match the server.
-    mNeedsSettingsReapply.store(true);
 }
 
 void MultiShip::OnIncomingJson(nlohmann::json payload) {
@@ -216,52 +154,9 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
 
         const std::string packetType = payload["type"].get<std::string>();
 
-        // The server sends our world's seed: settings, placements (+ owner per check),
-        // player names, seed value. We only CACHE it here (no Context access from this
-        // network thread); the main thread applies it at file creation and the grant
-        // handler reads the owner map. No result packet is expected.
-        if (packetType == "placements") {
-            MultiShipSeed seed;
-            seed.valid = true;
-            if (payload.contains("world") && payload["world"].is_number_integer())
-                seed.world = payload["world"].get<int>();
-            if (payload.contains("seed") && payload["seed"].is_number_unsigned())
-                seed.seed = payload["seed"].get<uint32_t>();
-            if (payload.contains("settings") && payload["settings"].is_array())
-                for (const auto& s : payload["settings"])
-                    if (s.is_number_integer()) seed.settings.push_back((uint8_t)s.get<int>());
-            if (payload.contains("players") && payload["players"].is_array())
-                for (const auto& n : payload["players"])
-                    if (n.is_string()) seed.players.push_back(n.get<std::string>());
-            if (payload.contains("placements") && payload["placements"].is_array()) {
-                for (const auto& p : payload["placements"]) {
-                    if (!p.contains("check") || !p.contains("item") ||
-                        !p["check"].is_number_integer() || !p["item"].is_number_integer())
-                        continue;
-                    const int check = p["check"].get<int>();
-                    seed.placements.emplace_back(check, p["item"].get<int>());
-                    if (p.contains("owner") && p["owner"].is_number_integer())
-                        seed.ownerOf[check] = p["owner"].get<int>();
-                    // Ice-trap disguise (model + fake name) the server assigned to this
-                    // slot. Only present for ice-trap placements; cached for the file
-                    // creation path to apply as a Context override.
-                    if (p.contains("iceTrapModel") && p["iceTrapModel"].is_string() &&
-                        p.contains("iceTrapName") && p["iceTrapName"].is_string()) {
-                        seed.iceTrapDisguise[check] = { p["iceTrapModel"].get<std::string>(),
-                                                        p["iceTrapName"].get<std::string>() };
-                    }
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lk(gMultiShipSeedMutex);
-                gMultiShipSeed = std::move(seed);
-            }
-            SPDLOG_INFO("[MultiShip] Cached server seed (world {}, {} placements)",
-                        gMultiShipSeed.world, gMultiShipSeed.placements.size());
-            return;
-        }
-
-        // Only command packets are handled beyond this point; ignore anything else.
+        // Only command packets are handled. Anything else (e.g. the server's
+        // placements/seed packet — empty in this networking-only baseline) is
+        // accepted and ignored without a response, so an empty seed never crashes.
         if (packetType != "command") {
             return;
         }
@@ -273,9 +168,8 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
         }
 
         std::string command = payload["command"].get<std::string>();
-        bool cmdIsIceTrap = false;
-        bool cmdIsGive = false;  // a give_item command (the only kind safe to route through the item queue)
-        std::string cmdIceTrapModel, cmdIceTrapText;
+        bool cmdIsGive = false;  // a give_item command (the only kind routed through the item queue)
+        int cmdRgId = -1;        // the resolved RandomizerGet id of a give (for OnItemReceive match)
 
         // The "give_item randomizer <item>" console command expects a numeric
         // RandomizerGet id, but commands arrive with the enum NAME (e.g.
@@ -291,7 +185,8 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             if (tokens.size() >= 3 && tokens[0] == "give_item" && tokens[1] == "randomizer") {
                 std::optional<RandomizerGet> rg = StringToEnum<RandomizerGet>(tokens[2]);
                 if (rg.has_value()) {
-                    tokens[2] = std::to_string(static_cast<int>(*rg));
+                    cmdRgId = static_cast<int>(*rg);
+                    tokens[2] = std::to_string(cmdRgId);
                     command.clear();
                     for (size_t i = 0; i < tokens.size(); ++i) {
                         if (i != 0) {
@@ -305,22 +200,8 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
                     SendJsonToRemote(response);
                     return;
                 } else {
-                    // Already a numeric id.
-                    rg = static_cast<RandomizerGet>(std::stoi(tokens[2]));
-                }
-
-                // For an ice trap, capture the server-provided disguise model/text.
-                // They're applied right before the item is actually granted (now for a
-                // manual send, or at drain time for a queued multiworld delivery), so a
-                // queued trap doesn't clobber an earlier one. Both are optional.
-                if (rg.has_value() && *rg == RG_ICE_TRAP) {
-                    cmdIsIceTrap = true;
-                    if (payload.contains("iceTrapModel") && payload["iceTrapModel"].is_string()) {
-                        cmdIceTrapModel = payload["iceTrapModel"].get<std::string>();
-                    }
-                    if (payload.contains("iceTrapText") && payload["iceTrapText"].is_string()) {
-                        cmdIceTrapText = payload["iceTrapText"].get<std::string>();
-                    }
+                    // Already a numeric id; dispatch as-is.
+                    cmdRgId = std::stoi(tokens[2]);
                 }
             }
         }
@@ -348,29 +229,26 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
                 d.seq = payload["seq"].get<uint32_t>();
             }
             d.command = command;
-            d.isIceTrap = cmdIsIceTrap;
-            d.iceTrapModel = cmdIceTrapModel;
-            d.iceTrapText = cmdIceTrapText;
+            d.rgId = cmdRgId;
             {
                 std::lock_guard<std::mutex> lk(gDeliveryMutex);
                 gDeliveryQueue.push_back(std::move(d));
             }
+            SPDLOG_INFO("[MultiShip] Queued give (tracked={}, seq={}): {}", isMultiShipItem,
+                        isMultiShipItem ? payload["seq"].get<uint32_t>() : 0, command);
             response["status"] = "success";
             SendJsonToRemote(response);
             return;
         }
 
-        // Non-give command (e.g. the GUI Teleport button): dispatch immediately. Apply
-        // the ice-trap disguise first, since it's consumed by the give path.
-        if (cmdIsIceTrap) {
-            if (!cmdIceTrapModel.empty()) {
-                if (std::optional<RandomizerGet> m = StringToEnum<RandomizerGet>(cmdIceTrapModel)) {
-                    Rando::Traps::SetNextIceTrapModel(*m);
-                }
-            }
-            if (!cmdIceTrapText.empty()) {
-                Rando::Traps::SetNextIceTrapText(cmdIceTrapText);
-            }
+        // Non-give command (e.g. the server's Teleport button: `entrance <hex>`).
+        // MultiShip server commands only apply in a MultiShip game, so ignore it unless
+        // a QUEST_MULTISHIP file is loaded; otherwise dispatch immediately through the
+        // existing SoH console handler.
+        if (!GameInteractor::IsSaveLoaded() || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+            SPDLOG_INFO("[MultiShip] Ignoring command (not in a MultiShip game): {}", command);
+            SendJsonToRemote(response);
+            return;
         }
         std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
             Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
@@ -393,254 +271,135 @@ void MultiShip::RegisterHooks() {
     // registering from the network thread left the hooks silently never firing.
 
     // Loading a save file (entering gameplay from the file select). Only files
-    // created in the MultiShip gamemode are reported — other quests (vanilla,
-    // rando, boss rush, ...) are irrelevant to a MultiShip session.
+    // created in the MultiShip gamemode are reported — other quests are irrelevant.
     //
-    // NOTE: OnLoadGame fires from the file-select gamestate, before Play_Init
-    // runs, so gPlayState is still NULL and GameInteractor::IsSaveLoaded() would
-    // return false here. We must NOT gate on it or the packet is never sent. The
-    // selected file's quest is already populated in gSaveContext at this point.
+    // NOTE: OnLoadGame fires from the file-select gamestate, before Play_Init runs,
+    // so gPlayState is still NULL and GameInteractor::IsSaveLoaded() would return
+    // false here. We must NOT gate on it or the packet is never sent. The selected
+    // file's quest is already populated in gSaveContext at this point.
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnLoadGame>([&](int32_t fileNum) {
         if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP)
             return;
-
         SendOnLoadGame();
-        // Re-apply the server settings to the live context once we're in-game (the
-        // OnGameFrameUpdate handler does it after LoadRandomizer), so runtime-checked
-        // settings like open forest reflect the server even on a plain load.
-        mNeedsSettingsReapply.store(true);
     });
 
-    // Full check re-report after a (re)connect — the main-thread counterpart of the
-    // OnConnected flag. Re-reports every already-collected check so the server learns
-    // about anything collected while we were disconnected (it dedupes, so only new
-    // ones route items). This runs on the main thread, where reading the rando
-    // Context is safe. The per-frame cost is just one atomic load until the flag is
-    // set, so it's negligible.
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>([&]() {
-        // --- Deliver queued server items, one per ready frame ----------------------
-        // Hand out at most one queued item, and only while Link can actually receive
-        // one (not during loading / the spawn cutscene, and not while another get-item
-        // animation is playing). This is what stops items being delivered before the
-        // player is in-game and stops rapid deliveries from overwriting each other.
-        if (isConnected && gSaveContext.ship.quest.id == QUEST_MULTISHIP &&
-            Randomizer_PlayerCanReceiveItem()) {
-            PendingDelivery d;
-            bool have = false;
+    // Deliver queued server items by RE-ATTEMPTING the front item every frame Link is able
+    // to start a get-item — exactly like SoH's own randomizer item delivery
+    // (RandomizerOnPlayerUpdateForItemQueueHandler). The give only STAGES player->getItemId;
+    // the player's action handlers (later in the same player update) turn it into the actual
+    // get-item. A single attempt can stage getItemId yet fail to "take" (it strands), so we
+    // re-issue every eligible frame until the item is actually RECEIVED — confirmed by the
+    // OnItemReceive hook below, which pops the queue. Registered on OnPlayerUpdate (not
+    // OnGameFrameUpdate) so the give lands at the right point in the frame; the readiness
+    // gate excludes an in-progress get-item / freeze, so re-attempts never duplicate or
+    // interrupt one.
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayerUpdate>([&]() {
+        if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+            return;
+        }
+        if (!Randomizer_PlayerCanReceiveItem()) {
+            // Diagnostic: if something is queued but we can't (re)attempt, log WHY
+            // (throttled) so a stall's cause is visible instead of guessed at.
+            bool queued;
             {
                 std::lock_guard<std::mutex> lk(gDeliveryMutex);
-                if (!gDeliveryQueue.empty()) {
-                    d = gDeliveryQueue.front();
-                    have = true;
+                queued = !gDeliveryQueue.empty();
+            }
+            if (queued) {
+                static uint32_t sBlockLog = 0;
+                if ((sBlockLog++ % 120) == 0) {
+                    Randomizer_LogReceiveBlockReason();
                 }
             }
-            if (have) {
-                if (d.tracked && d.seq < gSaveContext.ship.multishipReceivedSeq) {
-                    // Already-applied re-send (crash catch-up): drop it without re-granting.
-                    std::lock_guard<std::mutex> lk(gDeliveryMutex);
-                    if (!gDeliveryQueue.empty()) {
-                        gDeliveryQueue.pop_front();
-                    }
-                } else {
-                    // A fresh delivery. Apply the ice-trap disguise (consumed by the give
-                    // path), then dispatch the give. We only advance the persisted seq and
-                    // pop the queue AFTER confirming the give was actually accepted —
-                    // GiveItemEntryWithoutActor silently rejects gives in states the ready
-                    // gate above doesn't cover (jumping, freefall, aiming, ladders, holding
-                    // an explosive). On rejection the item stays at the front of the queue
-                    // and we retry next ready frame, so no delivery is ever lost and the
-                    // seq never over-counts. The disguise is re-applied each attempt (the
-                    // model is consumed-and-discarded on a failed give; re-setting the same
-                    // value is idempotent because we always retry the same front item).
-                    if (d.isIceTrap) {
-                        if (!d.iceTrapModel.empty()) {
-                            if (std::optional<RandomizerGet> m = StringToEnum<RandomizerGet>(d.iceTrapModel)) {
-                                Rando::Traps::SetNextIceTrapModel(*m);
-                            }
-                        }
-                        if (!d.iceTrapText.empty()) {
-                            Rando::Traps::SetNextIceTrapText(d.iceTrapText);
-                        }
-                    }
-                    std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
-                        Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
-                        ->Dispatch(d.command);
-                    if (Randomizer_PlayerIsReceivingItem()) {
-                        // Only a tracked multiworld delivery advances the persisted
-                        // high-water mark; an untracked manual send leaves it untouched.
-                        if (d.tracked) {
-                            gSaveContext.ship.multishipReceivedSeq = d.seq + 1;
-                        }
-                        std::lock_guard<std::mutex> lk(gDeliveryMutex);
-                        if (!gDeliveryQueue.empty()) {
-                            gDeliveryQueue.pop_front();
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- Re-apply server settings to the LIVE context --------------------------
-        // Many randomizer settings are read at runtime from the live rando Context
-        // (e.g. leaving the forest checks RSK_FOREST via VB_OPEN_KOKIRI_FOREST). This
-        // runs after LoadRandomizer has restored the save's settings, so the server's
-        // authoritative values win — fixing settings that were stale/missing when the
-        // file was created (e.g. created before the seed arrived).
-        if (mNeedsSettingsReapply.load() && isConnected &&
-            gSaveContext.ship.quest.id == QUEST_MULTISHIP && GameInteractor::IsSaveLoaded()) {
-            std::vector<uint8_t> settings = MultiShip_GetServerSettings();
-            auto ctx = Rando::Context::GetInstance();
-            if (!settings.empty() && ctx != nullptr) {
-                size_t n = settings.size();
-                if (n > static_cast<size_t>(RSK_MAX)) n = static_cast<size_t>(RSK_MAX);
-                for (size_t i = 0; i < n; i++) {
-                    ctx->GetOption(static_cast<RandomizerSettingKey>(i)).Set(settings[i]);
-                }
-                // The live values now match the server. Re-derive the one-time world-state
-                // flags (Mido/forest exit, freed Gerudo carpenters, ...) from them: those
-                // are baked at file creation and, in the connect-before-create race, were
-                // baked from the wrong settings. This is idempotent and "open"-only, so
-                // re-running it never removes earned progress. Effects that read the live
-                // Context directly (King Zora, Jabu, waterfall, the gate/Door-of-Time
-                // actors) need no re-bake — the Set() above already fixed them; they
-                // refresh the next time their scene loads.
-                Randomizer_ApplyAreaAccessWorldState();
-                SPDLOG_INFO("[MultiShip] Re-applied {} server settings to the live context "
-                            "and re-baked area-access world state", n);
-                mNeedsSettingsReapply.store(false);
-            } else {
-                // The seed packet hasn't been cached yet — keep the flag and retry. Throttled
-                // so it doesn't spam every frame; if it never clears, the server isn't sending
-                // this client its placements (usually a username/session mismatch).
-                static uint32_t waitLog = 0;
-                if ((waitLog++ % 120) == 0) {
-                    SPDLOG_WARN("[MultiShip] Settings reapply pending: server seed not cached yet "
-                                "(settings {} cached).", settings.empty() ? "NOT" : "IS");
-                }
-            }
-        }
-
-        // --- Full check re-report after a (re)connect ------------------------------
-        if (!mNeedsCheckResync.load())
-            return;
-        if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
-            mNeedsCheckResync.store(false);  // request no longer relevant
             return;
         }
-        if (!GameInteractor::IsSaveLoaded())
-            return;  // not in-game yet; keep the flag and retry next frame
 
-        mNeedsCheckResync.store(false);
-        auto ctx = Rando::Context::GetInstance();
-        if (ctx == nullptr)
-            return;
-        int reported = 0;
-        for (int rc = 0; rc < RC_MAX; rc++) {
-            auto loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(rc));
-            if (loc != nullptr && loc->HasObtained()) {
-                nlohmann::json payload;
-                payload["id"] = ShipUtils::Random(0, UINT32_MAX);
-                payload["type"] = "hook";
-                payload["hook"]["type"] = "OnCheckCollected";
-                payload["hook"]["check"] = rc;
-                SendJsonToRemote(payload);
-                ++reported;
+        PendingDelivery d;
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lk(gDeliveryMutex);
+            if (!gDeliveryQueue.empty()) {
+                PendingDelivery& front = gDeliveryQueue.front();
+                // Resolve the item this give will grant ONCE, now, against the pre-give
+                // inventory — so a progressive item matches the exact tier on receipt.
+                if (front.expectModIndex < 0 && front.rgId >= 0) {
+                    Randomizer_ResolveGive(front.rgId, &front.expectModIndex, &front.expectGetItemId);
+                }
+                d = front;
+                have = true;
             }
         }
-        SPDLOG_INFO("[MultiShip] Re-reported {} collected checks after (re)connect", reported);
+        if (!have) {
+            return;
+        }
+
+        if (d.tracked && d.seq < gSaveContext.ship.multishipReceivedSeq) {
+            // Already-applied re-send (crash catch-up): drop it without re-granting.
+            std::lock_guard<std::mutex> lk(gDeliveryMutex);
+            if (!gDeliveryQueue.empty()) {
+                gDeliveryQueue.pop_front();
+            }
+            return;
+        }
+
+        // (Re-)issue the give for the front item. We do NOT pop here — the OnItemReceive
+        // hook below pops once the item is actually received, so a stranded give is retried
+        // next frame instead of being lost. The log is throttled so a multi-frame retry
+        // doesn't spam.
+        {
+            static uint32_t sDeliverLog = 0;
+            if ((sDeliverLog++ % 20) == 0) {
+                SPDLOG_INFO("[MultiShip] Delivering (rg={}, tracked={}, seq={}): {}", d.rgId, d.tracked, d.seq,
+                            d.command);
+            }
+        }
+        std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
+            Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
+            ->Dispatch(d.command);
     });
 
-    // Collecting a randomizer check (a location). This is what the server routes:
-    // it looks up who owns the item at this location and delivers it to them.
-    // OnRandoSetCheckStatus hands us the RandomizerCheck directly. We report on
-    // both COLLECTED (just collected) and SAVED (already-obtained, surfaced on
-    // load) — the server dedupes via its session log, so re-reporting is harmless
-    // and rebuilds the server's routing state if its .session was lost.
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRandoSetCheckStatus>(
-        [&](RandomizerCheck rc, RandomizerCheckStatus status) {
-            if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP)
-                return;
-            if (status != RCSHOW_COLLECTED && status != RCSHOW_SAVED)
-                return;
-
-            nlohmann::json payload;
-            payload["id"] = ShipUtils::Random(0, UINT32_MAX);
-            payload["type"] = "hook";
-            payload["hook"]["type"] = "OnCheckCollected";
-            payload["hook"]["check"] = static_cast<int>(rc);
-            SendJsonToRemote(payload);
-        });
-
-    // Receiving an item.
+    // Confirm + pop a delivered item once it's actually received. The drain re-issues the
+    // front give every eligible frame; this fires when the get-item completes (for ice
+    // traps, when the deferred freeze is applied — ExtraTraps raises OnItemReceive then).
+    // Match the received item to the front delivery so an unrelated world pickup can't pop
+    // it, and advance the persisted seq only for tracked stream deliveries.
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnItemReceive>([&](GetItemEntry itemEntry) {
-        if (!isConnected || !GameInteractor::IsSaveLoaded())
-            return;
-
-        nlohmann::json payload;
-        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
-        payload["type"] = "hook";
-        payload["hook"]["type"] = "OnItemReceive";
-        payload["hook"]["tableId"] = itemEntry.tableId;
-        payload["hook"]["getItemId"] = itemEntry.getItemId;
-        SendJsonToRemote(payload);
-    });
-
-    // Defeating a boss. OnBossDefeat is already filtered to boss enemies only,
-    // so no manual category filtering is needed here.
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnBossDefeat>([&](void* refActor) {
-        if (!isConnected || !GameInteractor::IsSaveLoaded())
-            return;
-
-        Actor* actor = (Actor*)refActor;
-        nlohmann::json payload;
-        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
-        payload["type"] = "hook";
-        payload["hook"]["type"] = "OnBossDefeat";
-        payload["hook"]["actorId"] = actor->id;
-        payload["hook"]["params"] = actor->params;
-        SendJsonToRemote(payload);
-    });
-
-    // Dying and getting damaged both surface through the health-change hook.
-    // This fires after the health value has been updated, so we can inspect the
-    // resulting health to distinguish a death from non-lethal damage.
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayerHealthChange>([&](int16_t amount) {
-        if (!isConnected || !GameInteractor::IsSaveLoaded())
-            return;
-
-        nlohmann::json payload;
-        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
-        payload["type"] = "hook";
-        if (gSaveContext.health <= 0) {
-            payload["hook"]["type"] = "OnPlayerDeath";
-        } else if (amount < 0) {
-            payload["hook"]["type"] = "OnPlayerDamage";
-            payload["hook"]["amount"] = amount;
-        } else {
+        if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
             return;
         }
-        SendJsonToRemote(payload);
+        std::lock_guard<std::mutex> lk(gDeliveryMutex);
+        if (gDeliveryQueue.empty()) {
+            return;
+        }
+        const PendingDelivery& d = gDeliveryQueue.front();
+        // Only pop if this received item is the one our in-flight give resolved to (set on
+        // the first delivery attempt). Guards against an unrelated world pickup popping the
+        // queue, and against popping before we've even attempted the front item.
+        if (d.expectModIndex < 0 || static_cast<int>(itemEntry.modIndex) != d.expectModIndex ||
+            static_cast<int>(itemEntry.getItemId) != d.expectGetItemId) {
+            return;
+        }
+        if (d.tracked) {
+            gSaveContext.ship.multishipReceivedSeq = d.seq + 1;
+        }
+        SPDLOG_INFO("[MultiShip] Confirmed received (rg={}, tracked={}, seq={})", d.rgId, d.tracked, d.seq);
+        gDeliveryQueue.pop_front();
     });
 
-    // Show the textbox for a server-sent ice trap. SoH only registers the
-    // TEXT_RANDOMIZER_CUSTOM_ITEM handler for randomizer seeds (IS_RANDO), so in a
-    // MultiShip game the ice trap textbox would otherwise fall back to its raw id.
-    // We register our own: when a server-provided text is pending, build the
-    // message from it. No pending text means the textbox isn't ours, so we leave
-    // it untouched.
+    // Get-item textbox for delivered randomizer items. Items the rando table stores as
+    // plain vanilla (MOD_NONE: Kokiri Sword, tunics, ...) already show their normal
+    // "You got X" box. Items stored as MOD_RANDOMIZER (Master Sword, bottles, keys, ...)
+    // use TEXT_RANDOMIZER_CUSTOM_ITEM, whose builder SoH only registers for IS_RANDO
+    // seeds — so in a (non-rando) MultiShip session they'd pop a blank box. Register the
+    // same builder here, gated on being connected. It reads the item from the player and
+    // builds the message inline, so it needs no generated seed.
+    // TODO: later, prefix the box with the sending player's name.
     GameInteractor::Instance->RegisterGameHookForID<GameInteractor::OnOpenText>(
         TEXT_RANDOMIZER_CUSTOM_ITEM, [&](uint16_t* textId, bool* loadFromMessageTable) {
-            if (!isConnected) {
+            if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
                 return;
             }
-            std::optional<std::string> text = Rando::Traps::TakeNextIceTrapText();
-            if (!text.has_value()) {
-                return;
-            }
-            CustomMessage msg(*text, *text, *text, { QM_BLUE, QM_BLUE, QM_BLUE });
-            msg.AutoFormat();
-            *loadFromMessageTable = false;
-            msg.LoadIntoFont();
+            BuildItemMessage(textId, loadFromMessageTable);
         });
 }
 

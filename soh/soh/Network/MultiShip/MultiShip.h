@@ -3,7 +3,6 @@
 #ifdef ENABLE_MULTISHIP
 #ifdef __cplusplus
 
-#include <atomic>
 #include <memory>
 
 #include "soh/Network/Network.h"
@@ -15,23 +14,12 @@ class MultiShip : public Network {
     // Sends an OnLoadGame packet for the currently loaded MultiShip file.
     void SendOnLoadGame();
 
-    // Set on (re)connect (network thread); consumed on the main thread in the
-    // OnGameFrameUpdate hook to re-report every already-collected check, so the
-    // server catches up on anything collected while we were disconnected.
-    std::atomic<bool> mNeedsCheckResync{ false };
-
-    // Set on (re)connect / load; consumed on the main thread to re-apply the server's
-    // settings to the live rando Context. Many settings are checked at RUNTIME (e.g.
-    // open forest via VB_OPEN_KOKIRI_FOREST reads RSK_FOREST live), so the live values
-    // must match the server even if the save baked stale ones at creation.
-    std::atomic<bool> mNeedsSettingsReapply{ false };
-
   public:
     static MultiShip* Instance;
     virtual ~MultiShip() = default;
 
-    // Entry point invoked by the Network menu's "Connect" button.
-    // For now this is a stub that does nothing real (see MultiShip.cpp).
+    // Entry point invoked by the Network menu's "Connect" button. Toggles the
+    // connection (the Network base class does the actual TCP work on its thread).
     void Connect();
 
     // Registers the GameInteractor hooks. Called once at boot on the main thread

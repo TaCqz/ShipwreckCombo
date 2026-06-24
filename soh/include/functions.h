@@ -1072,16 +1072,6 @@ void func_80084BF4(PlayState* play, u16 flag);
 uint16_t Interface_DrawTextLine(GraphicsContext* gfx, char text[], int16_t x, int16_t y, uint16_t colorR, uint16_t colorG, uint16_t colorB, uint16_t colorA, float textScale, uint8_t textShadow);
 u8 Item_Give(PlayState* play, u8 item);
 u16 Randomizer_Item_Give(PlayState* play, GetItemEntry giEntry);
-#ifdef ENABLE_MULTISHIP
-// MultiShip: when the item currently being received belongs to ANOTHER player, the
-// over-head get-item animation + textbox still play, but the local inventory give is
-// skipped (mirrors the ice-trap path in func_8084DFF4). One-shot, set by the rando
-// item handler just before staging the item.
-void Randomizer_SetForeignItemGet(s32 ownerWorld); // -1 clears (normal/own item)
-s32 Randomizer_GetForeignItemOwner(void);          // peek owner world (for the textbox), -1 if none
-s32 Randomizer_GetForeignItemCheck(void);          // peek the foreign item's check (disguise lookup), -1 if none
-s32 Randomizer_ConsumeForeignItemGet(void);        // returns 1 if foreign (and clears), else 0
-#endif
 u8 Item_CheckObtainability(u8 item);
 void Inventory_DeleteItem(u16 item, u16 invSlot);
 s32 Inventory_ReplaceItem(PlayState* play, u16 oldItem, u16 newItem);

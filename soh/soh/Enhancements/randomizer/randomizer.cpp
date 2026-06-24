@@ -29,7 +29,6 @@
 #include "soh/Notification/Notification.h"
 #include "soh/ObjectExtension/ObjectExtension.h"
 #include "soh/Enhancements/randomizer/RCToRandInf.h"
-#include "soh/Enhancements/randomizer/savefile.h"
 
 extern "C" {
 #include "src/overlays/actors/ovl_Obj_Bean/z_obj_bean.h"
@@ -997,81 +996,6 @@ bool GenerateRandomizer(std::string seed /*= ""*/) {
     }
     return false;
 }
-
-#ifdef ENABLE_MULTISHIP
-// Defined in soh/Network/MultiShip/MultiShip.cpp — the seed data the connected
-// MultiShip server sent this session (empty if not connected / none received).
-std::vector<uint8_t> MultiShip_GetServerSettings();
-std::vector<std::pair<int, int>> MultiShip_GetServerPlacements();  // (check, item)
-// Disguise the server assigned to the ice trap at `check` (model RandomizerGet +
-// fake name). Returns false if the check isn't a disguised ice trap.
-bool MultiShip_GetIceTrapDisguise(int check, int& modelRg, std::string& name);
-
-extern "C" void Randomizer_InitMultiShipSaveFile() {
-    // A MultiShip file must be a valid randomizer world locally so the check/logic/
-    // tracker systems work, but it must NOT generate its own seed: the server is the
-    // authority and sends the real placements on connect. So we set the world up from
-    // the current settings and finalize them WITHOUT running a fill — exactly the
-    // preparation a loaded spoiler gets (ParseSpoiler also never fills). This is
-    // stable (no synchronous generation that can freeze or fail); the local item
-    // placements stay empty until the server provides them.
-    auto ctx = Rando::Context::GetInstance();
-    Rando::Settings::GetInstance()->SetAllToContext();
-    // Prefer the server's exact settings (authoritative) over the local rando menu,
-    // so this world matches the seed the server generated. Falls back to the menu
-    // settings already applied above if we aren't connected / got none.
-    std::vector<uint8_t> serverSettings = MultiShip_GetServerSettings();
-    if (!serverSettings.empty()) {
-        const size_t n = std::min(serverSettings.size(), static_cast<size_t>(RSK_MAX));
-        for (size_t i = 0; i < n; i++) {
-            ctx->GetOption(static_cast<RandomizerSettingKey>(i)).Set(serverSettings[i]);
-        }
-        SPDLOG_INFO("[MultiShip] Applied {} server settings to the new file", n);
-    } else {
-        SPDLOG_WARN("[MultiShip] No server settings cached at file creation — using local "
-                    "rando menu defaults. Connect to the server before creating the file.");
-    }
-    RandomizerCheckObjects::UpdateImGuiVisibility();
-    ctx->FinalizeSettings(std::set<RandomizerCheck>{}, std::set<RandomizerTrick>{});
-    // Apply the server's placements so each location knows the item it holds (for the
-    // local get-item display; cross-world items are routed remotely on collection).
-    std::vector<std::pair<int, int>> placements = MultiShip_GetServerPlacements();
-    for (const auto& pr : placements) {
-        const auto rc = static_cast<RandomizerCheck>(pr.first);
-        auto loc = ctx->GetItemLocation(rc);
-        if (loc == nullptr) continue;
-        const auto rg = static_cast<RandomizerGet>(pr.second);
-        loc->SetPlacedItem(rg);
-        // An ice trap must STILL be an ice trap on purchase (the trap fires) — only
-        // its presentation is faked. Mirror base rando's CreateItemOverrides by
-        // recording an override here (the trap looks like the server-chosen model and
-        // shows a fake name). The existing shop rendering (Context::GetFinalGIEntry +
-        // BuildMerchantMessage's GetTrickName) and the get-item textbox (F-004) all
-        // read this single override, and SaveManager persists it per check so the
-        // disguise is stable across reloads. possibleIceTrapModels is empty in
-        // MultiShip (no local fill), so the model comes from the server, not locally.
-        if (rg == RG_ICE_TRAP) {
-            int modelRg = 0;
-            std::string fakeName;
-            if (MultiShip_GetIceTrapDisguise(pr.first, modelRg, fakeName)) {
-                const auto model = static_cast<RandomizerGet>(modelRg);
-                Rando::ItemOverride ov(rc, model);
-                ov.SetTrickName(Text{ fakeName, fakeName, fakeName });
-                ctx->overrides[rc] = ov;
-                ctx->iceTrapModels[rc] = model;
-            } else {
-                SPDLOG_WARN("[MultiShip] Ice trap at check {} has no server disguise — "
-                            "it will show as 'Ice Trap'", pr.first);
-            }
-        }
-    }
-    SPDLOG_INFO("[MultiShip] Applied {} server placements to the new file", placements.size());
-    // Mark the seed as externally provided (like a loaded spoiler) so nothing tries
-    // to generate one for this file.
-    ctx->SetSpoilerLoaded(true);
-    Randomizer_InitSaveFile();
-}
-#endif
 
 static bool locationsTabOpen = false;
 static bool tricksTabOpen = false;

@@ -373,15 +373,7 @@ typedef enum {
 
 #define IS_VANILLA (gSaveContext.ship.quest.id == QUEST_NORMAL)
 #define IS_MASTER_QUEST (gSaveContext.ship.quest.id == QUEST_MASTER)
-#ifdef ENABLE_MULTISHIP
-// A MultiShip game is a randomizer world (remote multiworld), so it must take all
-// the same code paths as a rando game (check tracking, item overrides, settings).
-#define IS_RANDO                                                                                                       \
-    (gSaveContext.ship.quest.id == QUEST_RANDOMIZER || gSaveContext.ship.quest.id == QUEST_MULTISHIP)
-#define IS_MULTISHIP (gSaveContext.ship.quest.id == QUEST_MULTISHIP)
-#else
 #define IS_RANDO (gSaveContext.ship.quest.id == QUEST_RANDOMIZER)
-#endif
 #define IS_BOSS_RUSH (gSaveContext.ship.quest.id == QUEST_BOSSRUSH)
 
 typedef enum {
