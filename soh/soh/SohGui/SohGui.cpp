@@ -256,7 +256,22 @@ void ShowRandomizerSettingsMenu() {
     mSohMenu->Show();
 }
 
+#ifdef ENABLE_MULTISHIP
+void ShowMultiShipNetworkMenu() {
+    CVarSetString(CVAR_SETTING("Menu.ActiveHeader"), "Network");
+    CVarSetString(CVAR_SETTING("Menu.NetworkSidebarSection"), "MultiShip");
+    mSohMenu->Show();
+}
+#endif
+
 void ShowEscMenu() {
     mSohMenu->Show();
 }
 } // namespace SohGui
+
+#ifdef ENABLE_MULTISHIP
+// C entry point for the file-select "Connect" option (z_file_choose.c).
+extern "C" void MultiShip_OpenNetworkMenu(void) {
+    SohGui::ShowMultiShipNetworkMenu();
+}
+#endif

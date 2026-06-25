@@ -20,6 +20,7 @@
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
 #include "soh/Enhancements/randomizer/randomizerEnumStrings.h"
 #include "soh/Enhancements/custom-message/CustomMessageTypes.h"  // TEXT_RANDOMIZER_CUSTOM_ITEM
+#include "MultiShipSeed.h"
 
 extern "C" {
 extern SaveContext gSaveContext;
@@ -111,6 +112,58 @@ void MultiShip::SendOnLoadGame() {
     SendJsonToRemote(payload);
 }
 
+// --- File-select menu C accessors (used by z_file_choose.c) ------------------------
+// "Start save" is enabled only when connected, the chosen user name is one of the seed's
+// players, and a full seed has been received (so there is something to persist).
+extern "C" bool MultiShip_CanStartSave(void) {
+    if (MultiShip::Instance == nullptr || !MultiShip::Instance->isConnected) {
+        return false;
+    }
+    std::string name = CVarGetString(CVAR_REMOTE_MULTISHIP("UserName"), "");
+    return MultiShipSeed::IsNameValid(name) && MultiShipSeed::IsReady();
+}
+
+// One-line status for the file-select MultiShip menu. Static buffer (the menu draws it
+// once per frame on the main thread, so this is safe).
+extern "C" const char* MultiShip_FileSelectStatus(void) {
+    static std::string status;
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    const bool connected = MultiShip::Instance != nullptr && MultiShip::Instance->isConnected;
+    if (d.ready && d.worldId >= 0 && d.worldId < (int)d.players.size()) {
+        status = "Seed loaded for " + d.players[d.worldId];
+    } else if (d.ready) {
+        status = "Seed loaded";
+    } else if (connected) {
+        status = "Connected - use Start Multiworld Save in the Network menu";
+    } else {
+        status = "Not connected - press Connect";
+    }
+    return status.c_str();
+}
+
+void MultiShip::RequestStartMultiworldSave() {
+    // Triggered by the 'Start Multiworld Save' menu button. Ask the server for the seed
+    // matching the configured user name; it validates the name, locks that world to us,
+    // and replies with the full v3 SeedData (handled in OnIncomingJson). The button is
+    // greyed unless connected + valid name, but we re-check here defensively.
+    std::string name = CVarGetString(CVAR_REMOTE_MULTISHIP("UserName"), "");
+    if (!isConnected) {
+        MultiShipSeed::SetStatus("Not connected");
+        return;
+    }
+    if (name.empty()) {
+        MultiShipSeed::SetStatus("Enter a user name first");
+        return;
+    }
+    nlohmann::json payload;
+    payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+    payload["type"] = "start_multiworld_save";
+    payload["playerName"] = name;
+    SPDLOG_INFO("[MultiShip] Requesting 'Start Multiworld Save' for '{}'", name);
+    MultiShipSeed::SetStatus("Requesting seed for '" + name + "'...");
+    SendJsonToRemote(payload);
+}
+
 void MultiShip::OnConnected() {
     // Announce ourselves so the server has something to display immediately.
     // The user name is added to every packet by SendJsonToRemote().
@@ -154,9 +207,46 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
 
         const std::string packetType = payload["type"].get<std::string>();
 
-        // Only command packets are handled. Anything else (e.g. the server's
-        // placements/seed packet — empty in this networking-only baseline) is
-        // accepted and ignored without a response, so an empty seed never crashes.
+        // MultiShip seed handshake (F-035 Part B). The server pushes the seed's world
+        // names on connect, and replies to a 'Start Multiworld Save' request with the
+        // full v3 SeedData (or a denial). These carry no command and need no response.
+        if (packetType == "multiworld_seed_info") {
+            std::string seedId = payload.value("seedId", std::string());
+            std::vector<std::string> players;
+            if (payload.contains("players") && payload["players"].is_array()) {
+                for (const auto& p : payload["players"]) {
+                    if (p.is_string()) {
+                        players.push_back(p.get<std::string>());
+                    }
+                }
+            }
+            MultiShipSeed::SetKnownPlayers(seedId, players);
+            SPDLOG_INFO("[MultiShip] Seed info: {} world name(s) in seed {}", players.size(), seedId);
+            return;
+        }
+        if (packetType == "multiworld_seed") {
+            int worldId = payload.value("worldId", -1);
+            std::string data = payload.value("data", std::string());
+            std::string err;
+            if (!data.empty() && MultiShipSeed::DeserializeV3FromBase64(data, worldId, err)) {
+                std::string who = payload.value("playerName", std::string());
+                MultiShipSeed::SetStatus("Seed received (world " + std::to_string(worldId + 1) +
+                                         (who.empty() ? "" : ": " + who) + ")");
+            } else {
+                MultiShipSeed::SetStatus("Seed receive failed: " + (err.empty() ? "empty data" : err));
+                SPDLOG_ERROR("[MultiShip] Failed to deserialize seed: {}", err);
+            }
+            return;
+        }
+        if (packetType == "multiworld_seed_denied") {
+            std::string reason = payload.value("reason", std::string("denied"));
+            MultiShipSeed::SetStatus("Denied: " + reason);
+            SPDLOG_WARN("[MultiShip] 'Start Multiworld Save' denied: {}", reason);
+            return;
+        }
+
+        // Only command packets are handled beyond this point. Anything else is accepted
+        // and ignored without a response, so an unexpected packet never crashes.
         if (packetType != "command") {
             return;
         }

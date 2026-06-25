@@ -174,6 +174,13 @@ class SaveManager {
     static void LoadRandomizer();
     static void SaveRandomizer(SaveContext* saveContext, int sectionID, bool fullSave);
 
+#ifdef ENABLE_MULTISHIP
+    // F-035: the multiworld seed (players / placements / owners / curated settings)
+    // received from the MultiShip server, persisted so it survives reloads.
+    static void LoadMultiship();
+    static void SaveMultiship(SaveContext* saveContext, int sectionID, bool fullSave);
+#endif
+
     static void LoadBaseVersion1();
     static void LoadBaseVersion2();
     static void LoadBaseVersion3();

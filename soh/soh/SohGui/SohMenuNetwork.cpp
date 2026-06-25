@@ -7,6 +7,7 @@
 #include <soh/Network/Sail/Sail.h>
 #include <soh/Network/CrowdControl/CrowdControl.h>
 #include <soh/Network/MultiShip/MultiShip.h>
+#include <soh/Network/MultiShip/MultiShipSeed.h>
 
 namespace SohGui {
 
@@ -257,6 +258,35 @@ void SohMenu::AddMenuNetwork() {
         } else {
             info.name = "Connecting...##MultiShip";
         }
+    });
+
+    // Start Multiworld Save (F-035 Part B). Mirrors how the randomizer's "Generate"
+    // step makes a seed available before a file is created: this requests the seed for
+    // the chosen world from the server. Once received, a QUEST_MULTISHIP file created
+    // in the file-select persists it. Greyed unless connected AND the entered user name
+    // is one of the seed's world names (learned from the server's seed-info push).
+    AddWidget(path, "Start Multiworld Save", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path,
+              "Request this seed's world for your user name. When it arrives, create a "
+              "MultiShip file in the file-select to start playing it.\n"
+              "\n"
+              "Disabled until you are connected and your user name matches one of the "
+              "seed's players. \n",
+              WIDGET_TEXT);
+    AddWidget(path, "Start Multiworld Save##MultiShip", WIDGET_BUTTON)
+        .PreFunc([](WidgetInfo& info) {
+            std::string name = CVarGetString(CVAR_REMOTE_MULTISHIP("UserName"), "");
+            info.options->disabled =
+                !(MultiShip::Instance->isConnected && MultiShipSeed::IsNameValid(name));
+        })
+        .Callback([](WidgetInfo& info) { MultiShip::Instance->RequestStartMultiworldSave(); })
+        .Options(ButtonOptions().Tooltip(
+            "Connect to a MultiShip server and set your user name to one of the seed's "
+            "players to enable this."));
+    AddWidget(path, "##MultiShipSeedStatus", WIDGET_TEXT).PreFunc([](WidgetInfo& info) {
+        std::string status = MultiShipSeed::GetStatus();
+        info.isHidden = status.empty();
+        info.name = status;
     });
 #endif
 }

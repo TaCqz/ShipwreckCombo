@@ -121,6 +121,21 @@ ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerCheck(RandomizerC
 uint8_t Randomizer_IsSeedGenerated();
 uint8_t Randomizer_IsSpoilerLoaded();
 void Randomizer_SetSpoilerLoaded(bool spoilerLoaded);
+#ifdef ENABLE_MULTISHIP
+// True once a full MultiShip v3 seed has been received from the server (or loaded from
+// a save). Gates QUEST_MULTISHIP file creation, mirroring Randomizer_IsSeedGenerated().
+// Defined in soh/Network/MultiShip/MultiShipSeed.cpp.
+bool MultiShip_IsSeedReady(void);
+// True when the file-select "Start save" button should be enabled: connected to a server,
+// the chosen user name is one of the seed's players, AND a seed has been received.
+bool MultiShip_CanStartSave(void);
+// One-line status for the file-select MultiShip menu (e.g. "Seed loaded for Player 1" /
+// "Not connected"). Points at a static buffer; copy if you need to keep it.
+const char* MultiShip_FileSelectStatus(void);
+// Opens the in-game Network menu (MultiShip section) so the player can connect + request
+// their seed. Used by the file-select menu's "Connect" option.
+void MultiShip_OpenNetworkMenu(void);
+#endif
 uint8_t Randomizer_GenerateRandomizer();
 void Randomizer_ShowRandomizerMenu();
 GetItemEntry ItemTable_Retrieve(int16_t getItemID);

@@ -10,6 +10,9 @@
 #include "Enhancements/randomizer/item.h"
 #include "soh/Enhancements/randomizer/settings.h"
 #include "ResourceManagerHelpers.h"
+#ifdef ENABLE_MULTISHIP
+#include "soh/Network/MultiShip/MultiShipSeed.h"
+#endif
 
 #include "z64.h"
 #include "cvar_prefixes.h"
@@ -122,6 +125,12 @@ SaveManager::SaveManager() {
 
     AddLoadFunction("randomizer", 1, LoadRandomizer);
     AddSaveFunction("randomizer", 1, SaveRandomizer, true, SECTION_PARENT_NONE);
+
+#ifdef ENABLE_MULTISHIP
+    coreSectionIDsByName["multiship"] = SECTION_ID_MULTISHIP;
+    AddLoadFunction("multiship", 1, LoadMultiship);
+    AddSaveFunction("multiship", 1, SaveMultiship, true, SECTION_PARENT_NONE);
+#endif
 
     AddInitFunction(InitFileImpl);
 
@@ -409,6 +418,87 @@ void SaveManager::SaveRandomizer(SaveContext* saveContext, int sectionID, bool f
         SaveManager::Instance->SaveData("", randoContext->GetTrickOption(RandomizerTrick(i)).Get());
     });
 }
+
+#ifdef ENABLE_MULTISHIP
+// F-035 Part B: persist the multiworld seed received from the MultiShip server, so the
+// placements / owners / curated settings survive a reload. Mirrors SaveRandomizer: gated
+// on this being a MultiShip file (the loop in SaveFileThreaded also skips us otherwise).
+// Counts are stored alongside the arrays so LoadArray knows how many entries to read.
+void SaveManager::SaveMultiship(SaveContext* saveContext, int sectionID, bool fullSave) {
+    if (saveContext->ship.quest.id != QUEST_MULTISHIP) {
+        return;
+    }
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+
+    SaveManager::Instance->SaveData("seedId", d.seedId);
+    SaveManager::Instance->SaveData("seed", d.seed);
+    SaveManager::Instance->SaveData("worldId", d.worldId);
+
+    SaveManager::Instance->SaveData("playerCount", (uint32_t)d.players.size());
+    SaveManager::Instance->SaveArray("players", d.players.size(), [&](size_t i) {
+        SaveManager::Instance->SaveData("", d.players[i]);
+    });
+
+    SaveManager::Instance->SaveData("placementCount", (uint32_t)d.placements.size());
+    SaveManager::Instance->SaveArray("placements", d.placements.size(), [&](size_t i) {
+        SaveManager::Instance->SaveStruct("", [&]() {
+            SaveManager::Instance->SaveData("loc", d.placements[i].loc);
+            SaveManager::Instance->SaveData("locWorld", d.placements[i].locWorld);
+            SaveManager::Instance->SaveData("item", d.placements[i].item);
+            SaveManager::Instance->SaveData("ownerWorld", d.placements[i].ownerWorld);
+        });
+    });
+
+    SaveManager::Instance->SaveData("settingCount", (uint32_t)d.settings.size());
+    SaveManager::Instance->SaveArray("settings", d.settings.size(), [&](size_t i) {
+        SaveManager::Instance->SaveStruct("", [&]() {
+            SaveManager::Instance->SaveData("key", d.settings[i].key);
+            SaveManager::Instance->SaveData("value", d.settings[i].value);
+        });
+    });
+}
+
+void SaveManager::LoadMultiship() {
+    if (gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+        return;
+    }
+    MultiShipSeed::Data d;
+
+    SaveManager::Instance->LoadData("seedId", d.seedId);
+    SaveManager::Instance->LoadData("seed", d.seed);
+    SaveManager::Instance->LoadData("worldId", d.worldId, -1);
+
+    uint32_t playerCount = 0, placementCount = 0, settingCount = 0;
+    SaveManager::Instance->LoadData("playerCount", playerCount, (uint32_t)0);
+    SaveManager::Instance->LoadData("placementCount", placementCount, (uint32_t)0);
+    SaveManager::Instance->LoadData("settingCount", settingCount, (uint32_t)0);
+
+    d.players.resize(playerCount);
+    SaveManager::Instance->LoadArray("players", playerCount, [&](size_t i) {
+        SaveManager::Instance->LoadData("", d.players[i]);
+    });
+
+    d.placements.resize(placementCount);
+    SaveManager::Instance->LoadArray("placements", placementCount, [&](size_t i) {
+        SaveManager::Instance->LoadStruct("", [&]() {
+            SaveManager::Instance->LoadData("loc", d.placements[i].loc);
+            SaveManager::Instance->LoadData("locWorld", d.placements[i].locWorld);
+            SaveManager::Instance->LoadData("item", d.placements[i].item);
+            SaveManager::Instance->LoadData("ownerWorld", d.placements[i].ownerWorld);
+        });
+    });
+
+    d.settings.resize(settingCount);
+    SaveManager::Instance->LoadArray("settings", settingCount, [&](size_t i) {
+        SaveManager::Instance->LoadStruct("", [&]() {
+            SaveManager::Instance->LoadData("key", d.settings[i].key);
+            SaveManager::Instance->LoadData("value", d.settings[i].value);
+        });
+    });
+
+    MultiShipSeed::LoadFromSnapshot(d);
+}
+#endif
 
 // Init() here is an extension of InitSram, and thus not truly an initializer for SaveManager itself. don't put any
 // class initialization stuff here
@@ -1164,6 +1254,13 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
             if (!saveFuncInfo.saveWithBase || (saveFuncInfo.name == "randomizer" && !IS_RANDO)) {
                 continue;
             }
+#ifdef ENABLE_MULTISHIP
+            // Likewise skip the multiship section entirely for non-multiship files, so a
+            // vanilla save never gains an empty "multiship" block (keeps it byte-identical).
+            if (saveFuncInfo.name == "multiship" && saveContext->ship.quest.id != QUEST_MULTISHIP) {
+                continue;
+            }
+#endif
             nlohmann::json& sectionBlock = saveBlock["sections"][saveFuncInfo.name];
             sectionBlock["version"] = sectionHandlerPair.second.version;
             // If any save file is loaded for medatata, or a spoiler log is loaded (not sure which at this point), there

@@ -26,6 +26,11 @@ class MultiShip : public Network {
     // (NOT from the network thread); each hook no-ops while disconnected.
     void RegisterHooks();
 
+    // Sends a 'Start Multiworld Save' request for the configured user name. The server
+    // validates the name against the loaded seed, locks that world to us, and replies
+    // with the full v3 SeedData (handled in OnIncomingJson). Invoked by the menu button.
+    void RequestStartMultiworldSave();
+
     void OnIncomingJson(nlohmann::json payload) override;
     void OnConnected() override;
 

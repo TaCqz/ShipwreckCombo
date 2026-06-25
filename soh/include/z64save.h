@@ -72,6 +72,9 @@ typedef enum { // Pre-existing IDs for save sections in base code
     SECTION_ID_ENTRANCES,
     SECTION_ID_SCENES,
     SECTION_ID_TRACKER_DATA,
+#ifdef ENABLE_MULTISHIP
+    SECTION_ID_MULTISHIP, // F-035: persisted multiworld seed (players/placements/settings)
+#endif
     SECTION_ID_MAX
 } SaveFuncIDs;
 

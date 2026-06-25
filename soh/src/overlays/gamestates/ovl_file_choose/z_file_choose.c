@@ -32,6 +32,14 @@
 #define MAX_QUEST QUEST_BOSSRUSH
 #endif
 
+#ifdef ENABLE_MULTISHIP
+// Options in the MultiShip pre-creation menu (reuses the randomizer menu's cursor index).
+typedef enum {
+    MSM_START_SAVE, // create the QUEST_MULTISHIP save from the received seed
+    MSM_CONNECT,    // open the Network menu to connect / fetch the seed
+} MultiShipMenuOption;
+#endif
+
 void Sram_InitDebugSave(void);
 void Sram_InitBossRushSave();
 
@@ -686,6 +694,19 @@ void FileChoose_UpdateQuestMenu(GameState* thisx) {
                                    &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
             this->prevConfigMode = this->configMode;
             this->configMode = CM_ROTATE_TO_RANDOMIZER_SETTINGS_MENU;
+#ifdef ENABLE_MULTISHIP
+        } else if (this->questType[this->buttonIndex] == QUEST_MULTISHIP) {
+            // MultiShip shows a pre-creation menu modeled on the randomizer's: it reuses
+            // the same rotation/rendering (the CM_*_RANDOMIZER_SETTINGS_MENU states), but
+            // FileChoose_UpdateRandomizerMenu + the draw branch on quest == MULTISHIP to
+            // present "Start save" (greyed until connected + valid name + seed received)
+            // and "Connect" (opens the Network menu).
+            Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
+                                   &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+            this->randomizerIndex = MSM_START_SAVE;  // reset selection on entry
+            this->prevConfigMode = this->configMode;
+            this->configMode = CM_ROTATE_TO_RANDOMIZER_SETTINGS_MENU;
+#endif
         } else {
             Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
                                    &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
@@ -728,11 +749,103 @@ void FileChoose_UpdateQuestMenu(GameState* thisx) {
     }
 }
 
+#ifdef ENABLE_MULTISHIP
+// Begin name entry for a MultiShip save. Mirrors the randomizer "Start" path's name-entry
+// setup (the menu reuses CM_RANDOMIZER_SETTINGS_MENU, so prevConfigMode is set to it and
+// the existing rotation/name-entry code applies unchanged).
+static void FileChoose_MultiShipStartNameEntry(FileChooseContext* this) {
+    static u8 emptyName[] = { 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E };
+    static u8 emptyNameNES[] = { 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
+    static u8 linkName[] = { 0x15, 0x2C, 0x31, 0x2E, 0x3E, 0x3E, 0x3E, 0x3E };
+    static u8 linkNameNES[] = { 0xB6, 0xCD, 0xD2, 0xCF, 0xDF, 0xDF, 0xDF, 0xDF };
+    static u8 linkNameJP[] = { 0x81, 0x87, 0x61, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
+    u8* defaultName;
+
+    this->prevConfigMode = this->configMode;  // CM_RANDOMIZER_SETTINGS_MENU
+    this->configMode = CM_ROTATE_TO_NAME_ENTRY;
+    this->logoAlpha = 0;
+    CVarSetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 1);
+    this->kbdButton = FS_KBD_BTN_NONE;
+    this->charPage = FS_CHAR_PAGE_ENG;
+    this->kbdX = 0;
+    this->kbdY = 0;
+    this->charIndex = 0;
+    this->charBgAlpha = 0;
+    this->newFileNameCharCount = CVarGetInteger(CVAR_ENHANCEMENT("LinkDefaultName"), 0) ? 4 : 0;
+    this->nameEntryBoxPosX = 120;
+    this->nameEntryBoxAlpha = 0;
+    if (ResourceMgr_GetGameRegion(0) == GAME_REGION_PAL && gSaveContext.language != LANGUAGE_JPN) {
+        defaultName = CVarGetInteger(CVAR_ENHANCEMENT("LinkDefaultName"), 0) ? &linkName : &emptyName;
+    } else if (gSaveContext.language == LANGUAGE_JPN) {
+        if (CVarGetInteger(CVAR_ENHANCEMENT("LinkDefaultName"), 0) != 0) {
+            defaultName = &linkNameJP;
+            this->newFileNameCharCount = 3;
+        } else {
+            defaultName = &emptyNameNES;
+        }
+        this->charPage = FS_CHAR_PAGE_HIRA;
+    } else {
+        defaultName = CVarGetInteger(CVAR_ENHANCEMENT("LinkDefaultName"), 0) ? &linkNameNES : &emptyNameNES;
+    }
+    memcpy(Save_GetSaveMetaInfo(this->buttonIndex)->playerName, defaultName, 8);
+}
+
+// MultiShip pre-creation menu: "Start save" (greyed until connected + valid name + seed
+// received) and "Connect" (opens the Network menu). Reuses the randomizer menu's cursor
+// (randomizerIndex) and fade (randomizerUIAlpha) so all rotation/rendering is shared.
+static void FileChoose_UpdateMultiShipMenu(FileChooseContext* this, Input* input, bool dpad) {
+    this->randomizerUIAlpha += 25;
+    if (this->randomizerUIAlpha > 255) {
+        this->randomizerUIAlpha = 255;
+    }
+
+    if (ABS(this->stickRelY) > 30 || (dpad && CHECK_BTN_ANY(input->press.button, BTN_DDOWN | BTN_DUP))) {
+        if (this->stickRelY < -30 || (dpad && CHECK_BTN_ANY(input->press.button, BTN_DDOWN))) {
+            this->randomizerIndex = (this->randomizerIndex >= MSM_CONNECT) ? MSM_START_SAVE : this->randomizerIndex + 1;
+        } else if (this->stickRelY > 30 || (dpad && CHECK_BTN_ANY(input->press.button, BTN_DUP))) {
+            this->randomizerIndex = (this->randomizerIndex <= MSM_START_SAVE) ? MSM_CONNECT : this->randomizerIndex - 1;
+        }
+        Audio_PlaySoundGeneral(NA_SE_SY_FSEL_CURSOR, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
+                               &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+    }
+
+    if (CHECK_BTN_ALL(input->press.button, BTN_B)) {
+        this->configMode = CM_RANDOMIZER_SETTINGS_MENU_TO_QUEST;
+        return;
+    }
+
+    if (CHECK_BTN_ALL(input->press.button, BTN_A)) {
+        if (this->randomizerIndex == MSM_START_SAVE) {
+            if (MultiShip_CanStartSave()) {
+                Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
+                                       &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+                FileChoose_MultiShipStartNameEntry(this);
+            } else {
+                Sfx_PlaySfxCentered(NA_SE_SY_OCARINA_ERROR);
+            }
+        } else { // MSM_CONNECT
+            Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
+                                   &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+            MultiShip_OpenNetworkMenu();
+        }
+    }
+}
+#endif
+
 void FileChoose_UpdateRandomizerMenu(GameState* thisx) {
     FileChoose_UpdateStickDirectionPromptAnim(thisx);
     FileChooseContext* this = (FileChooseContext*)thisx;
     Input* input = &this->state.input[0];
     bool dpad = CVarGetInteger(CVAR_SETTING("DpadInText"), 0);
+
+#ifdef ENABLE_MULTISHIP
+    // This menu is shared with MultiShip (entered via the same states); branch on the
+    // selected quest before any randomizer-specific update runs.
+    if (this->questType[this->buttonIndex] == QUEST_MULTISHIP) {
+        FileChoose_UpdateMultiShipMenu(this, input, dpad);
+        return;
+    }
+#endif
 
     FileChoose_UpdateRandomizer();
 
@@ -1831,6 +1944,40 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
     } else if (this->configMode == CM_BOSS_RUSH_MENU) {
         FileChoose_DrawBossRushMenuWindowContents(this);
     } else if (this->configMode == CM_RANDOMIZER_SETTINGS_MENU) {
+#ifdef ENABLE_MULTISHIP
+        // MultiShip reuses this menu (see FileChoose_UpdateRandomizerMenu): draw its two
+        // options + a seed-status line instead of the randomizer options.
+        if (this->questType[this->buttonIndex] == QUEST_MULTISHIP) {
+            uint8_t textAlpha = this->randomizerUIAlpha;
+            const char* labels[] = { "Start save", "Connect" };
+            for (uint8_t index = MSM_START_SAVE; index <= MSM_CONNECT; index++) {
+                uint8_t r = 255, g = 255, b = 255;
+                if (this->randomizerIndex == index) {
+                    b = 80; // highlight the selected option in yellow
+                }
+                // Grey out "Start save" until a seed has been received for a valid name.
+                if (index == MSM_START_SAVE && !MultiShip_CanStartSave()) {
+                    r = g = b = 100;
+                }
+                Interface_DrawTextLine(this->state.gfxCtx, (char*)labels[index], 70, (80 + (index * 16)), r, g, b,
+                                       textAlpha, 0.8f, true);
+            }
+            // Status line: whether a seed is loaded and for which player.
+            Interface_DrawTextLine(this->state.gfxCtx, (char*)MultiShip_FileSelectStatus(), 70, (80 + 48), 220, 220,
+                                   255, textAlpha, 0.8f, true);
+
+            uint16_t textOffset = 16 * this->randomizerIndex;
+            Gfx_SetupDL_39Opa(this->state.gfxCtx);
+            gDPSetCombineMode(POLY_OPA_DISP++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
+            gDPLoadTextureBlock(POLY_OPA_DISP++, gArrowCursorTex, G_IM_FMT_IA, G_IM_SIZ_8b, 16, 24, 0,
+                                G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, 4, G_TX_NOMASK, G_TX_NOLOD,
+                                G_TX_NOLOD);
+            FileChoose_DrawTextRec(this->state.gfxCtx, this->stickRightPrompt.arrowColorR,
+                                   this->stickRightPrompt.arrowColorG, this->stickRightPrompt.arrowColorB, textAlpha, 62,
+                                   (85 + textOffset), 0.42f, 0, 0, 1.0f, 1.0f);
+        } else
+#endif
+        {
         uint8_t language = (gSaveContext.language == LANGUAGE_JPN) ? LANGUAGE_ENG : gSaveContext.language;
         uint8_t textAlpha = this->randomizerUIAlpha;
 
@@ -1879,6 +2026,7 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
         FileChoose_DrawTextRec(this->state.gfxCtx, this->stickRightPrompt.arrowColorR,
                                this->stickRightPrompt.arrowColorG, this->stickRightPrompt.arrowColorB, textAlpha, 62,
                                (85 + textOffset), 0.42f, 0, 0, 1.0f, 1.0f);
+        }
 
     } else if (this->configMode != CM_ROTATE_TO_NAME_ENTRY && this->configMode != CM_START_BOSS_RUSH_MENU &&
                this->configMode != CM_ROTATE_TO_BOSS_RUSH_MENU && this->configMode != CM_BOSS_RUSH_TO_QUEST &&
