@@ -276,6 +276,12 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
     // receive items, so server gives would queue but never deliver until it ended.
     if (gSaveContext.ship.quest.id == QUEST_MULTISHIP) {
         gSaveContext.cutsceneIndex = 0;
+        // F-041: grant the Link's Pocket starting dungeon reward NOW, before the creation save
+        // below, so it lands in the saved file and the file-select slot metadata from the start
+        // (otherwise it'd only be granted later at OnLoadGame, after this save, and wouldn't show
+        // in the slot until the next in-game save). persist=0: the Save_SaveFile() below persists
+        // it (reward in the base section + the once-only marker in the multiship section, together).
+        MultiShip_GrantStartingReward(0);
     }
 #endif
 

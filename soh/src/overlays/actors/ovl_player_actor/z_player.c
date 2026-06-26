@@ -7343,6 +7343,26 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                 uint8_t skipItemCutsceneRando = IS_RANDO && giEntry.modIndex == MOD_NONE &&
                                                 Item_CheckObtainability(giEntry.itemId) != ITEM_NONE && isDropToSkip;
 
+#ifdef ENABLE_MULTISHIP
+                // MultiShip (F-041): show the get-item over-head animation for EVERY collected or
+                // delivered item — including junk (rupees, ammo, ...) that vanilla would silently
+                // add — so the player always sees what they got and who it's for. The ONE exception
+                // is an OWN Gold Skulltula token (skulltula kill-drop or overworld freestanding
+                // pickup): it stays vanilla and does NOT interrupt gameplay. A token bound for the
+                // OTHER player is a foreign item (foreign flag set) and DOES animate — it's being
+                // sent away, so the moment should show. Overrides the rando/FastDrops skip-animation
+                // heuristics above; IS_MULTISHIP-gated so vanilla + standard rando are untouched.
+                if (IS_MULTISHIP) {
+                    if (Randomizer_GetForeignItemOwner() < 0 && Randomizer_MultiShipIsTokenEntry(giEntry)) {
+                        showItemCutscene = false;
+                    } else {
+                        showItemCutscene = true;
+                        skipItemCutscene = false;
+                        skipItemCutsceneRando = false;
+                    }
+                }
+#endif
+
                 // Show cutscene when picking up a item.
                 if (showItemCutscene && !skipItemCutscene && !skipItemCutsceneRando) {
 

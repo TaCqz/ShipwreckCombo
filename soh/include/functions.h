@@ -1079,6 +1079,10 @@ u16 Randomizer_Item_Give(PlayState* play, GetItemEntry giEntry);
 // showing the animation/textbox. Defined in soh/Enhancements/randomizer/hook_handlers.cpp.
 s32 Randomizer_GetForeignItemOwner(void);
 s32 Randomizer_ConsumeForeignItemGet(void);
+// F-041: 1 if the get-item entry is a Gold Skulltula token. z_player uses this to keep an OWN
+// token silent (no over-head, as vanilla) while still forcing the animation for every other
+// MultiShip item — and for a token going to the OTHER player (foreign flag set).
+s32 Randomizer_MultiShipIsTokenEntry(GetItemEntry giEntry);
 #endif
 u8 Item_CheckObtainability(u8 item);
 void Inventory_DeleteItem(u16 item, u16 invSlot);

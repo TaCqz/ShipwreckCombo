@@ -1966,6 +1966,17 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
             Interface_DrawTextLine(this->state.gfxCtx, (char*)MultiShip_FileSelectStatus(), 70, (80 + 48), 220, 220,
                                    255, textAlpha, 0.8f, true);
 
+            // F-041: show this world's starting dungeon reward (Link's Pocket) before the save is
+            // loaded, so the player sees which medallion/stone they begin with. Only once a seed
+            // (with a reward) has been received.
+            const char* multiShipReward = MultiShip_StartingRewardName();
+            if (multiShipReward[0] != '\0') {
+                char multiShipRewardLine[96];
+                snprintf(multiShipRewardLine, sizeof(multiShipRewardLine), "Starting reward: %s", multiShipReward);
+                Interface_DrawTextLine(this->state.gfxCtx, multiShipRewardLine, 70, (80 + 64), 255, 230, 120, textAlpha,
+                                       0.8f, true);
+            }
+
             uint16_t textOffset = 16 * this->randomizerIndex;
             Gfx_SetupDL_39Opa(this->state.gfxCtx);
             gDPSetCombineMode(POLY_OPA_DISP++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);

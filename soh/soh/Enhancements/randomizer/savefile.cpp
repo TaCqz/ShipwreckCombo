@@ -4,6 +4,9 @@
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/randomizer/logic.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
+#ifdef ENABLE_MULTISHIP
+#include "soh/Enhancements/randomizer/static_data.h" // Rando::StaticData (F-041 starting reward)
+#endif
 
 extern "C" {
 #include <z64.h>
@@ -118,6 +121,20 @@ void GiveLinksPocketItem() {
         Flags_SetRandomizerInf(RAND_INF_LINKS_POCKET);
     }
 }
+
+#ifdef ENABLE_MULTISHIP
+// F-041: grant the starting dungeon reward placed at Link's Pocket in a MultiShip save. Mirrors
+// GiveLinksPocketItem (the proven rando path) but is driven by the MultiShip seed: the caller
+// (MultiShip.cpp) passes the reward RandomizerGet read from the RC_LINKS_POCKET placement and owns
+// the once-per-save guard. Dungeon rewards are vanilla (MOD_NONE) items, so StartingItemGive routes
+// them through Item_Give, which sets the vanilla quest item directly — no rando game-behavior layer
+// is needed (a MultiShip save has none). Called pre-spawn at save load with play == NULL, exactly
+// like SetStartingItems / GiveLinksPocketItem.
+extern "C" void Randomizer_MultiShipGiveStartingReward(int rgItem) {
+    GetItemEntry entry = Rando::StaticData::RetrieveItem((RandomizerGet)rgItem).GetGIEntry_Copy();
+    StartingItemGive(entry, RC_LINKS_POCKET);
+}
+#endif
 
 void SetStartingItems() {
     int startingAge = OTRGlobals::Instance->gRandoContext->GetOption(RSK_SELECTED_STARTING_AGE).Get();

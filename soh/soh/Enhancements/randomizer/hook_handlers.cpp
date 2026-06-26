@@ -492,6 +492,16 @@ extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getIte
     }
 }
 
+// MultiShip (F-041): true if `giEntry` is a Gold Skulltula token. z_player uses this to carve the
+// own-token case out of the "always animate" behavior: an OWN token (skulltula kill-drop or
+// freestanding pickup) must NOT interrupt gameplay (collected silently, as vanilla), while a token
+// bound for the OTHER player is a foreign item that DOES show the get-item animation. Uses the same
+// adjusted category as the rando RC-queue's skip-animation check (item_category_adj), so it tracks
+// however SoH classifies tokens. By value to match the C/C++ give-item ABI used elsewhere.
+extern "C" s32 Randomizer_MultiShipIsTokenEntry(GetItemEntry giEntry) {
+    return Randomizer_AdjustItemCategory(giEntry) == ITEM_CATEGORY_SKULLTULA_TOKEN ? 1 : 0;
+}
+
 // True when Link is in-game and able to START receiving an item right now. The MultiShip
 // delivery drain (MultiShip.cpp) gates on this and re-ATTEMPTS the give every frame this
 // is true (exactly like SoH's own randomizer item delivery,

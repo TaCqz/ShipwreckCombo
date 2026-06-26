@@ -135,6 +135,15 @@ const char* MultiShip_FileSelectStatus(void);
 // Opens the in-game Network menu (MultiShip section) so the player can connect + request
 // their seed. Used by the file-select menu's "Connect" option.
 void MultiShip_OpenNetworkMenu(void);
+// F-041: the name of this world's starting dungeon reward (Link's Pocket), for the file-select
+// pre-creation screen — shown before the save is loaded. Empty until a seed is received. Points at
+// a static buffer; copy if you need to keep it.
+const char* MultiShip_StartingRewardName(void);
+// F-041: grant the Link's Pocket starting dungeon reward into gSaveContext (once per save, guarded
+// by the persisted collected set). Call with persist=0 at file creation (Sram_InitSave) BEFORE the
+// creation save, so the reward is in the saved file + slot metadata from the start; persist=1
+// elsewhere (the OnLoadGame fallback) to save it immediately.
+void MultiShip_GrantStartingReward(int persist);
 #endif
 uint8_t Randomizer_GenerateRandomizer();
 void Randomizer_ShowRandomizerMenu();

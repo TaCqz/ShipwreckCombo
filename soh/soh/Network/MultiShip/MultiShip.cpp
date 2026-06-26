@@ -81,6 +81,10 @@ extern "C" void Randomizer_LogReceiveBlockReason(void);
 // UPG_STRENGTH) into that vanilla upgrade, so it shows in the equipment subscreen + takes effect.
 // Defined in hook_handlers.cpp (which has the game-side macros/functions). No-op for other items.
 extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getItemId);
+// Grants the Link's Pocket starting dungeon reward (F-041), reusing the proven rando StartingItemGive
+// path. Defined in soh/Enhancements/randomizer/savefile.cpp. The reward RandomizerGet comes from the
+// RC_LINKS_POCKET placement; this side owns the once-per-save guard (MultiShip_GrantStartingReward).
+extern "C" void Randomizer_MultiShipGiveStartingReward(int rgItem);
 
 // --- F-040 cross-world item flow ---------------------------------------------------
 // Set on the network thread when a full seed is (re)received; consumed on the main thread
@@ -200,6 +204,54 @@ static void MultiShip_ApplyPlacementsToContext() {
                 d.worldId, static_cast<int>(collected.size()));
 }
 
+// F-041: grant this world's starting dungeon reward, placed by the generator at RC_LINKS_POCKET
+// (a medallion or spiritual stone). Granted ONCE when the MultiShip save is created/initialized —
+// NOT via the F-040 collect-check flow — and idempotent across reloads via the persisted collected
+// set. Main thread only. Runs even while disconnected: a starting item is local.
+//
+// `persist`: when nonzero, persists with a full base save itself (the OnLoadGame fallback path,
+// where nothing else saves right after). When zero, the CALLER persists — used at file creation
+// (z_sram.c Sram_InitSave), which runs its own Save_SaveFile immediately after, so the reward must
+// land in gSaveContext BEFORE that creation save so the file-select slot metadata shows it from the
+// start (InitMeta reads gSaveContext.inventory.questItems). A self-save there would be redundant.
+extern "C" void MultiShip_GrantStartingReward(int persist) {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return;
+    }
+    // Once-only guard: the collected set is persisted in the multiship save section and restored
+    // (by LoadMultiship) before this runs, so a reload never re-grants or duplicates the reward.
+    if (MultiShipSeed::IsCollected(static_cast<int>(RC_LINKS_POCKET))) {
+        return;
+    }
+    int rewardRg = RG_NONE;
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld == d.worldId && pl.loc == static_cast<int>(RC_LINKS_POCKET)) {
+            rewardRg = pl.item;
+            break;
+        }
+    }
+    if (rewardRg <= RG_NONE) {
+        return;  // no Link's Pocket reward in this seed (e.g. an older seed) — nothing to grant.
+    }
+    Randomizer_MultiShipGiveStartingReward(rewardRg);
+    // Record it as collected so it isn't granted again. The OnRandoSetCheckStatus hook ignores
+    // RC_LINKS_POCKET, so this is the only marker.
+    MultiShipSeed::MarkCollected(static_cast<int>(RC_LINKS_POCKET));
+    if (persist) {
+        // Persist with a FULL base save, not just the multiship section: the granted reward lives in
+        // the base inventory/quest section while the once-only marker lives in the multiship section,
+        // and the two MUST reach disk together. A bare SaveSection(multiship) would write the marker
+        // while the base section on disk stayed stale (no reward) — and a later foreign-check
+        // SaveSection(multiship) could lock that in, losing the reward on reload. A base save writes
+        // every saveWithBase section (base + multiship) from one gSaveContext snapshot, keeping them
+        // consistent. (At file creation persist is 0: the caller's Save_SaveFile does this.)
+        SaveManager::Instance->SaveFile(gSaveContext.fileNum);
+    }
+    SPDLOG_INFO("[MultiShip] Granted starting dungeon reward (RG {}) at Link's Pocket for world {}", rewardRg,
+                d.worldId);
+}
+
 void MultiShip::Connect() {
     // The "Connect" menu button toggles the connection. The underlying Network
     // base class handles the actual TCP connection (and auto-reconnect) on its
@@ -271,6 +323,28 @@ extern "C" const char* MultiShip_FileSelectStatus(void) {
         status = "Not connected - press Connect";
     }
     return status.c_str();
+}
+
+// F-041: the name of this world's starting dungeon reward (from the Link's Pocket placement), shown
+// on the file-select pre-creation screen BEFORE the save is loaded so the player sees which reward
+// they start with. Empty until a seed is received. Static buffer (the menu draws it once per frame
+// on the main thread, so this is safe).
+extern "C" const char* MultiShip_StartingRewardName(void) {
+    static std::string name;
+    name.clear();
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return name.c_str();
+    }
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld == d.worldId && pl.loc == static_cast<int>(RC_LINKS_POCKET)) {
+            if (pl.item > RG_NONE) {
+                name = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(pl.item)).GetName().english;
+            }
+            break;
+        }
+    }
+    return name.c_str();
 }
 
 void MultiShip::RequestStartMultiworldSave() {
@@ -513,6 +587,11 @@ void MultiShip::RegisterHooks() {
         // own items locally works even while disconnected, so this is NOT gated on isConnected.
         gNeedsContextApply.store(false);
         MultiShip_ApplyPlacementsToContext();
+        // F-041: grant the Link's Pocket starting dungeon reward once (guarded by the collected
+        // set, which ApplyPlacementsToContext just restored for an existing file). Reward is local,
+        // so this runs even while disconnected. New files are already granted at creation
+        // (z_sram.c), so this is a fallback (e.g. legacy files); persist=1 so it saves itself.
+        MultiShip_GrantStartingReward(1);
         if (isConnected) {
             SendOnLoadGame();
         }
@@ -542,6 +621,12 @@ void MultiShip::RegisterHooks() {
                 return;
             }
             if (status != RCSHOW_COLLECTED && status != RCSHOW_SAVED) {
+                return;
+            }
+            // F-041: Link's Pocket is a starting item granted once at save init
+            // (MultiShip_GrantStartingReward), never collected in the world — exclude it from the
+            // cross-world collect flow so it isn't reported or double-processed.
+            if (rc == RC_LINKS_POCKET) {
                 return;
             }
             const int check = static_cast<int>(rc);
