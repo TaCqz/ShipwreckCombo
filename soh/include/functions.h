@@ -1072,6 +1072,14 @@ void func_80084BF4(PlayState* play, u16 flag);
 uint16_t Interface_DrawTextLine(GraphicsContext* gfx, char text[], int16_t x, int16_t y, uint16_t colorR, uint16_t colorG, uint16_t colorB, uint16_t colorA, float textScale, uint8_t textShadow);
 u8 Item_Give(PlayState* play, u8 item);
 u16 Randomizer_Item_Give(PlayState* play, GetItemEntry giEntry);
+#ifdef ENABLE_MULTISHIP
+// F-040: the in-progress get-item's owner world (>=0 means it belongs to another MultiShip
+// player), and a consuming variant that resets the one-shot flag. z_player uses these to skip
+// ONLY the inventory add (non-ice-trap) and to skip the freeze (foreign ice trap) while still
+// showing the animation/textbox. Defined in soh/Enhancements/randomizer/hook_handlers.cpp.
+s32 Randomizer_GetForeignItemOwner(void);
+s32 Randomizer_ConsumeForeignItemGet(void);
+#endif
 u8 Item_CheckObtainability(u8 item);
 void Inventory_DeleteItem(u16 item, u16 invSlot);
 s32 Inventory_ReplaceItem(PlayState* play, u16 oldItem, u16 newItem);

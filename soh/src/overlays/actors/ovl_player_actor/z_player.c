@@ -7378,6 +7378,16 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                         giEntry = this->getItemEntry;
                     }
                     EnBox* chest = (EnBox*)interactedActor;
+#ifdef ENABLE_MULTISHIP
+                    // MultiShip: the chest offered the item by its vanilla item-id, so the get-item
+                    // object loaded below would be the VANILLA one — but the held-up model is drawn
+                    // with the rando item's custom draw func (e.g. Randomizer_DrawPowerBracelet),
+                    // which reads that loaded object → mismatch → black model. The chest actor has
+                    // already resolved its real (placed) rando item, so use it for the object load.
+                    if (IS_MULTISHIP && chest != NULL && chest->getItemEntry.objectId != OBJECT_INVALID) {
+                        giEntry = chest->getItemEntry;
+                    }
+#endif
                     if (giEntry.itemId != ITEM_NONE) {
                         if (((Item_CheckObtainability(giEntry.itemId) == ITEM_NONE) && (giEntry.field & 0x40)) ||
                             ((Item_CheckObtainability(giEntry.itemId) != ITEM_NONE) && (giEntry.field & 0x20))) {
@@ -14113,9 +14123,34 @@ s32 func_8084DFF4(PlayState* play, Player* this) {
         equipNow = CVarGetInteger(CVAR_ENHANCEMENT("AskToEquip"), 0) && giEntry.modIndex == MOD_NONE &&
                    equipItem >= ITEM_SWORD_KOKIRI && equipItem <= ITEM_TUNIC_ZORA && CHECK_AGE_REQ_ITEM(equipItem);
 
+#ifdef ENABLE_MULTISHIP
+        // MultiShip: route a FOREIGN item's get-item textbox through the rando custom-item message
+        // so vanilla-table (MOD_NONE) foreign items also show "You found <Player>'s <item>!". They
+        // otherwise use their own vanilla text id, which the reword (hooked to that custom id) can't
+        // catch. Read-only here (the foreign flag is consumed below); a no-op for own/rando items.
+        if (Randomizer_GetForeignItemOwner() >= 0) {
+            giEntry.textId = TEXT_RANDOMIZER_CUSTOM_ITEM;
+        }
+#endif
         Message_StartTextbox(play, giEntry.textId, &this->actor);
+        // MultiShip (F-040): an item that belongs to another player shows the animation + textbox
+        // above (the textbox reword already read the owner via Randomizer_GetForeignItemOwner),
+        // but must NOT enter our inventory — the server delivers it to its owner. For a non-ice-
+        // trap we consume the one-shot flag here and skip only the inventory give (the same place
+        // ice traps skip theirs). For an ICE TRAP we DON'T consume yet: the give is skipped by the
+        // ice-trap check anyway, and the freeze block below consumes the flag to decide whether to
+        // freeze us — a foreign ice trap is routed to its owner, so it must NOT freeze us.
+        // 0 (no foreign item) for vanilla/rando, so they're unchanged.
+        s32 multiShipForeignItem = 0;
+#ifdef ENABLE_MULTISHIP
+        if (giEntry.modIndex == MOD_RANDOMIZER && giEntry.itemId == RG_ICE_TRAP) {
+            multiShipForeignItem = (Randomizer_GetForeignItemOwner() >= 0);
+        } else {
+            multiShipForeignItem = Randomizer_ConsumeForeignItemGet();
+        }
+#endif
         // RANDOTODO: Macro this boolean check.
-        if (!(giEntry.modIndex == MOD_RANDOMIZER && giEntry.itemId == RG_ICE_TRAP)) {
+        if (!(giEntry.modIndex == MOD_RANDOMIZER && giEntry.itemId == RG_ICE_TRAP) && !multiShipForeignItem) {
             if (giEntry.modIndex == MOD_NONE) {
                 // RANDOTOD: Move this into Item_Give() or some other more central location
                 if (giEntry.getItemId == GI_SWORD_BGS) {
@@ -14206,8 +14241,18 @@ s32 func_8084DFF4(PlayState* play, Player* this) {
             // #region SOH [Randomizer] TODO Better Ice trap handling?
             if (this->getItemEntry.itemId == RG_ICE_TRAP && this->getItemEntry.modIndex == MOD_RANDOMIZER) {
                 this->unk_862 = 0;
-                gSaveContext.ship.pendingIceTrapCount++;
-                Player_SetPendingFlag(this, play);
+                // MultiShip (F-040): a foreign ice trap is routed to its owner (who gets frozen) —
+                // it must NOT freeze us. Consume the one-shot foreign flag (deferred from the give
+                // block above for ice traps) and only freeze if this ice trap is ours. Returns 0
+                // for vanilla/rando, so they freeze exactly as before.
+                s32 multiShipForeignIceTrap = 0;
+#ifdef ENABLE_MULTISHIP
+                multiShipForeignIceTrap = Randomizer_ConsumeForeignItemGet();
+#endif
+                if (!multiShipForeignIceTrap) {
+                    gSaveContext.ship.pendingIceTrapCount++;
+                    Player_SetPendingFlag(this, play);
+                }
             }
             // #endregion
 

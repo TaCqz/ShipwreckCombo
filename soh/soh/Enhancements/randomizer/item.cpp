@@ -285,6 +285,27 @@ std::shared_ptr<GetItemEntry> Item::GetGIEntry() const { // NOLINT(*-no-recursio
             }
             break;
         case RG_PROGRESSIVE_STRENGTH:
+#ifdef ENABLE_MULTISHIP
+            // MultiShip treats strength as the vanilla 3-tier equipment upgrade (Goron's Bracelet /
+            // Silver / Gold Gauntlets) — it skips rando's grayscale "Power Bracelet" grab tier, which
+            // has no effect without the rando ability VBs and renders as a dark/black held model.
+            // These are MOD_NONE items, so the vanilla give sets UPG_STRENGTH directly. Resolved from
+            // the LIVE UPG_STRENGTH (not the rando grab flag), so it works without the logic engine.
+            if (IS_MULTISHIP) {
+                switch (CUR_UPG_VALUE(UPG_STRENGTH)) {
+                    case 0:
+                        actual = RG_GORONS_BRACELET;
+                        break;
+                    case 1:
+                        actual = RG_SILVER_GAUNTLETS;
+                        break;
+                    default:
+                        actual = RG_GOLDEN_GAUNTLETS;
+                        break;
+                }
+                break;
+            }
+#endif
             if (!logic->CheckRandoInf(RAND_INF_CAN_GRAB)) {
                 actual = RG_POWER_BRACELET;
                 break;

@@ -1436,6 +1436,14 @@ Text Rando::Traps::GetTrapName(uint16_t id, uint64_t* state) {
     return ShipUtils::RandomElement(trickNameTable[id], state);
 }
 
+bool Rando::Traps::HasTrapName(uint16_t id) {
+    if (!initTrickNames) {
+        InitTrickNames();
+        initTrickNames = true;
+    }
+    return id < trickNameTable.size() && !trickNameTable[id].empty();
+}
+
 RandomizerGet Rando::Traps::GetTrapTrickModel(uint64_t* state) {
     auto ctx = Rando::Context::GetInstance();
     RandomizerGet trickModel = ShipUtils::RandomElementFromSet(ctx->possibleIceTrapModels, state);

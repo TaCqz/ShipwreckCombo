@@ -191,7 +191,14 @@ void EnBox_Init(Actor* thisx, PlayState* play2) {
     Animation_Change(&this->skelanime, anim, 1.5f, animFrameStart, endFrame, ANIMMODE_ONCE, 0.0f);
 
     this->getItemEntry = ItemTable_RetrieveEntry(MOD_NONE, this->dyna.actor.params >> 5 & 0x7F);
-    if (IS_RANDO) {
+    // MultiShip reuses the rando placement Context, so a chest must resolve its real (placed) item
+    // here too — otherwise the get-item object loaded on chest-open is the vanilla one while the
+    // held model is drawn from the rando item, which renders black. Additive: IS_RANDO is unchanged.
+    if (IS_RANDO
+#ifdef ENABLE_MULTISHIP
+        || IS_MULTISHIP
+#endif
+    ) {
         RandomizerCheck rc = Randomizer_GetCheckFromActor(this->dyna.actor.id, play->sceneNum, this->dyna.actor.params);
         if (rc != RC_UNKNOWN_CHECK) {
             this->getItemEntry = Randomizer_GetItemFromKnownCheck(rc, this->dyna.actor.params >> 5 & 0x7F);

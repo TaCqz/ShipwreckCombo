@@ -5,6 +5,7 @@
  * etc.
  */
 #include <soh/OTRGlobals.h>
+#include <soh/util.h>  // SohUtils::GetItemName (foreign MOD_NONE item name, F-040)
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include "soh/Enhancements/custom-message/CustomMessageTypes.h"
@@ -22,6 +23,16 @@ extern "C" {
 #include "z64item.h"
 extern PlayState* gPlayState;
 }
+
+#ifdef ENABLE_MULTISHIP
+// F-040: the get-item textbox for a cross-world item shows "You found <Player>'s <item>!".
+// gForeignItemOwner is armed for the duration of a foreign get-item (hook_handlers.cpp);
+// gForeignItemCheck is the backing RandomizerCheck (so a disguised ice trap can resolve its fake
+// model from the Context override); MultiShip_GetPlayerName resolves a world index to its name.
+extern "C" s32 Randomizer_GetForeignItemOwner(void);
+extern "C" s32 Randomizer_GetForeignItemCheck(void);
+std::string MultiShip_GetPlayerName(int world);
+#endif
 
 void BuildTriforcePieceMessage(CustomMessage& msg) {
     uint8_t current = gSaveContext.ship.quest.data.randomizer.triforcePiecesCollected + 1;
@@ -68,6 +79,18 @@ void BuildTriforcePieceMessage(CustomMessage& msg) {
     msg.Format(ITEM_CUSTOM);
 }
 
+// MultiShip displays rando's "Power Bracelet" (the grab-ability strength tier) under the vanilla
+// name "Goron's Bracelet" — matching the equipment subscreen. Name only; the icon/color/model are
+// untouched. Returns rgid unchanged outside MultiShip, so standard rando is unaffected.
+static int16_t MultiShipDisplayNameRg(int16_t rgid) {
+#ifdef ENABLE_MULTISHIP
+    if (IS_MULTISHIP && rgid == RG_POWER_BRACELET) {
+        return RG_GORONS_BRACELET;
+    }
+#endif
+    return rgid;
+}
+
 void BuildCustomItemMessage(Player* player, CustomMessage& msg) {
     int16_t rgid;
     msg = CustomMessage("You found [[article]][[color]][[name]]%w!",
@@ -78,8 +101,61 @@ void BuildCustomItemMessage(Player* player, CustomMessage& msg) {
     } else {
         rgid = player->getItemId;
     }
-    CustomMessage name =
-        CustomMessage(Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetName(), TEXTBOX_TYPE_BLUE);
+#ifdef ENABLE_MULTISHIP
+    // F-040: a cross-world item collected for another player gets a possessive message
+    // ("You found <Player>'s <item>!") and drops the article. gForeignItemOwner is armed by the
+    // item-queue handler for the duration of this get-item (read here before z_player consumes
+    // it). Our own / server-delivered items leave it -1 and fall through to the normal message.
+    if (Randomizer_GetForeignItemOwner() >= 0) {
+        const int ownerWorld = Randomizer_GetForeignItemOwner();
+        std::string owner = MultiShip_GetPlayerName(ownerWorld);
+        if (owner.empty()) {
+            owner = "World " + std::to_string(ownerWorld + 1);
+        }
+        // Style matches the local get-item box (TEXTBOX_TYPE_BLUE + the item icon); wording per the
+        // MultiShip design: "You've found <item> from <Player>!" with the player name in %ggreen%w
+        // and progression (advancement) item names in %rred%w.
+        // Vanilla-table (MOD_NONE) item: it has no RandomizerGet, so use its plain vanilla name (no
+        // rando color/icon). z_player routed this textbox here; the item still goes to its owner.
+        if (player->getItemEntry.modIndex == MOD_NONE) {
+            std::string itemName = SohUtils::GetItemName(player->getItemEntry.itemId);
+            msg = CustomMessage("You've found %r" + itemName + "%w from %g" + owner + "%w!",
+                                "Du hast %r" + itemName + "%w von %g" + owner + "%w gefunden!",
+                                "Vous avez trouvé %r" + itemName + "%w de %g" + owner + "%w!", TEXTBOX_TYPE_BLUE);
+            msg.AutoFormat();
+            return;
+        }
+        // A foreign ice trap must show its DISGUISE, not "Ice Trap" — read the fake model the
+        // override stored for this check (mirrors base rando's shop/textbox disguise resolution).
+        if (rgid == RG_ICE_TRAP) {
+            const int check = Randomizer_GetForeignItemCheck();
+            auto ctx = OTRGlobals::Instance->gRandoContext;
+            if (check >= 0 && ctx != nullptr && ctx->overrides.contains(static_cast<RandomizerCheck>(check))) {
+                rgid = ctx->overrides[static_cast<RandomizerCheck>(check)].LooksLike();
+            }
+        }
+        // Progression (advancement) items get a red name; everything else keeps its own rando color.
+        std::string nameColor = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).IsAdvancement()
+                                    ? "%r"
+                                    : Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetColor();
+        msg = CustomMessage("You've found " + nameColor + "[[name]]%w from %g" + owner + "%w!",
+                            "Du hast " + nameColor + "[[name]]%w von %g" + owner + "%w gefunden!",
+                            "Vous avez trouvé " + nameColor + "[[name]]%w de %g" + owner + "%w!", TEXTBOX_TYPE_BLUE);
+        CustomMessage foreignName = CustomMessage(
+            Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(MultiShipDisplayNameRg(rgid))).GetName(),
+            TEXTBOX_TYPE_BLUE);
+        msg.Replace("[[name]]", foreignName);
+        if (Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).HasCustomIcon()) {
+            msg.AutoFormat(ITEM_CUSTOM);
+        } else {
+            msg.AutoFormat();
+        }
+        return;
+    }
+#endif
+    CustomMessage name = CustomMessage(
+        Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(MultiShipDisplayNameRg(rgid))).GetName(),
+        TEXTBOX_TYPE_BLUE);
     CustomMessage article = CustomMessage(
         Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgid)).GetArticle(), TEXTBOX_TYPE_BLUE);
     msg.Replace("[[article]]", article);
@@ -146,7 +222,14 @@ void BuildItemMessage(u16* textId, bool* loadFromMessageTable) {
     Player* player = GET_PLAYER(gPlayState);
     CustomMessage msg;
 
-    if (player->getItemEntry.getItemId == RG_ICE_TRAP) {
+    if (player->getItemEntry.getItemId == RG_ICE_TRAP
+#ifdef ENABLE_MULTISHIP
+        // A FOREIGN ice trap fires on its owner, not on us — show its disguise ("You found
+        // <Player>'s <fake item>!") instead of the troll/reveal message. Our own ice traps still
+        // get the troll message below.
+        && Randomizer_GetForeignItemOwner() < 0
+#endif
+    ) {
         Rando::Traps::BuildIceTrapMessage(msg, player->getItemEntry);
     } else if (player->getItemEntry.getItemId == RG_TRIFORCE_PIECE) {
         BuildTriforcePieceMessage(msg);
@@ -264,12 +347,19 @@ void RegisterItemMessages() {
 static RegisterShipInitFunc initFunc(RegisterItemMessages, { "IS_RANDO" });
 
 void RegisterCustomIconHooks() {
-    COND_VB_SHOULD(VB_LOAD_ITEM_ICON, IS_RANDO, {
+    // The custom in-textbox item icon for MOD_RANDOMIZER items also applies to a MultiShip game
+    // (it reuses the same get-item textbox); without it the icon control code renders as a stray
+    // glyph. Additive: the IS_RANDO branch is unchanged, so standard rando is unaffected.
+    bool customIconCond = IS_RANDO;
+#ifdef ENABLE_MULTISHIP
+    customIconCond = customIconCond || IS_MULTISHIP;
+#endif
+    COND_VB_SHOULD(VB_LOAD_ITEM_ICON, customIconCond, {
         if (*should == false) {
             LoadCustomItemIcon(static_cast<bool>(va_arg(args, int)));
         }
     });
-    COND_VB_SHOULD(VB_DRAW_ITEM_ICON, IS_RANDO, {
+    COND_VB_SHOULD(VB_DRAW_ITEM_ICON, customIconCond, {
         if (*should == false) {
             DrawCustomItemIcon(va_arg(args, Gfx**));
         }

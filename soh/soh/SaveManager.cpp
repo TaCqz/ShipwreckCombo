@@ -456,6 +456,14 @@ void SaveManager::SaveMultiship(SaveContext* saveContext, int sectionID, bool fu
             SaveManager::Instance->SaveData("value", d.settings[i].value);
         });
     });
+
+    // F-040: the checks we've already collected in our world. This is the idempotency guard
+    // so each check grants/reports exactly once across reloads and reconnects.
+    std::vector<int> collected = MultiShipSeed::GetCollected();
+    SaveManager::Instance->SaveData("collectedCount", (uint32_t)collected.size());
+    SaveManager::Instance->SaveArray("collected", collected.size(), [&](size_t i) {
+        SaveManager::Instance->SaveData("", collected[i]);
+    });
 }
 
 void SaveManager::LoadMultiship() {
@@ -497,6 +505,15 @@ void SaveManager::LoadMultiship() {
     });
 
     MultiShipSeed::LoadFromSnapshot(d);
+
+    // F-040: restore the collected-checks idempotency set (missing in older saves -> empty).
+    uint32_t collectedCount = 0;
+    SaveManager::Instance->LoadData("collectedCount", collectedCount, (uint32_t)0);
+    std::vector<int> collected(collectedCount);
+    SaveManager::Instance->LoadArray("collected", collectedCount, [&](size_t i) {
+        SaveManager::Instance->LoadData("", collected[i]);
+    });
+    MultiShipSeed::SetCollected(collected);
 }
 #endif
 

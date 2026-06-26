@@ -20,6 +20,16 @@
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
 #include "soh/Enhancements/randomizer/randomizerEnumStrings.h"
 #include "soh/Enhancements/custom-message/CustomMessageTypes.h"  // TEXT_RANDOMIZER_CUSTOM_ITEM
+// F-040: feed the native check-detection / give-item-replacement pipeline (registered for
+// MultiShip in hook_handlers.cpp) from the F-035 seed store by populating the otherwise-empty
+// randomizer Context with our world's placements. ITEM FLOW ONLY — no settings are applied.
+#include "soh/Enhancements/randomizer/SeedContext.h"  // Rando::Context
+#include "soh/Enhancements/randomizer/item_location.h"  // Rando::ItemLocation, RCSHOW_COLLECTED
+#include "soh/Enhancements/randomizer/item_override.h"   // Rando::ItemOverride (ice-trap disguise)
+#include "soh/Enhancements/randomizer/Traps.h"           // Rando::Traps::GetTrapTrickModel / GetTrapName
+#include "soh/Enhancements/randomizer/static_data.h"     // Rando::StaticData
+#include "soh/SaveManager.h"                            // SaveSection, SECTION_ID_MULTISHIP
+#include <atomic>
 #include "MultiShipSeed.h"
 
 extern "C" {
@@ -67,6 +77,128 @@ extern "C" bool Randomizer_PlayerCanReceiveItem(void);
 extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId);
 // Diagnostic: logs why the player currently can't receive an item (stall debugging).
 extern "C" void Randomizer_LogReceiveBlockReason(void);
+// Translates a received rando item that is a vanilla equipment upgrade for us (strength →
+// UPG_STRENGTH) into that vanilla upgrade, so it shows in the equipment subscreen + takes effect.
+// Defined in hook_handlers.cpp (which has the game-side macros/functions). No-op for other items.
+extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getItemId);
+
+// --- F-040 cross-world item flow ---------------------------------------------------
+// Set on the network thread when a full seed is (re)received; consumed on the main thread
+// (the only place it's safe to touch the rando Context / fire GameInteractor hooks).
+static std::atomic<bool> gNeedsContextApply{ false };
+
+// Our world index in the loaded seed, or -1 if no seed. Linked by the rando item pipeline
+// (hook_handlers.cpp) — plain C++ linkage, declared there with a matching forward decl.
+int MultiShip_GetMyWorld(void) {
+    return MultiShipSeed::Snapshot().worldId;
+}
+
+// The player/world name for world index `world`, or "" if out of range. Used by the get-item
+// textbox reword (ItemMessages.cpp BuildCustomItemMessage) to show "<Player>'s <item>".
+std::string MultiShip_GetPlayerName(int world) {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (world < 0 || world >= (int)d.players.size()) {
+        return std::string();
+    }
+    return d.players[world];
+}
+
+// The world that OWNS the item at our-world location `check` (a RandomizerCheck), or -1 if
+// the seed has no placement for it. When we collect a check, `check` is a location in our
+// own world, so only our-world placements are considered.
+int MultiShip_GetCheckOwner(int check) {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return -1;
+    }
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld == d.worldId && pl.loc == check) {
+            return pl.ownerWorld;
+        }
+    }
+    return -1;
+}
+
+// Populate the (otherwise empty) randomizer Context with our world's placements so the
+// native check-detection + give-item-replacement pipeline suppresses the vanilla item and
+// hands out the placed one. ITEM FLOW ONLY: no settings / FinalizeSettings — IsLocationShuffled
+// only needs SetPlacedItem and GetFinalGIEntry resolves the entry from it. Also restores the
+// COLLECTED status for already-collected checks (persisted) so the suppression VBs despawn
+// them — they are never granted/reported twice. Idempotent; main thread only.
+static void MultiShip_ApplyPlacementsToContext() {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return;
+    }
+    auto ctx = Rando::Context::GetInstance();
+    if (ctx == nullptr) {
+        return;
+    }
+    int placed = 0;
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld != d.worldId) {
+            continue;  // only locations in our own world are collected locally
+        }
+        Rando::ItemLocation* loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(pl.loc));
+        if (loc == nullptr) {
+            continue;
+        }
+        loc->SetPlacedItem(static_cast<RandomizerGet>(pl.item));
+        ++placed;
+    }
+
+    // Ice-trap disguise (F-040), mirroring the randomizer's Context::CreateItemOverrides: each
+    // ice trap appears as a random other item with a troll name. Base rando builds the disguise
+    // model pool (possibleIceTrapModels) during generation, which never runs in MultiShip — so we
+    // seed it from our world's real placed items (excluding ice traps), exactly the set base rando
+    // draws from. Then, per ice trap, pick a deterministic (per seed+check, so it's stable across
+    // reloads) disguise model + trick name and store an override; GetFinalGIEntry swaps the draw to
+    // the model and the get-item textbox uses the trick name.
+    ctx->possibleIceTrapModels.clear();
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld != d.worldId) {
+            continue;
+        }
+        RandomizerGet rg = static_cast<RandomizerGet>(pl.item);
+        // Only models with a trick-name entry are valid disguises (GetTrapName asserts otherwise).
+        if (rg != RG_ICE_TRAP && rg != RG_NONE && Rando::Traps::HasTrapName(static_cast<uint16_t>(rg))) {
+            ctx->possibleIceTrapModels.insert(rg);
+        }
+    }
+    if (!ctx->possibleIceTrapModels.empty()) {
+        for (const auto& pl : d.placements) {
+            if (pl.locWorld != d.worldId || static_cast<RandomizerGet>(pl.item) != RG_ICE_TRAP) {
+                continue;
+            }
+            RandomizerCheck rc = static_cast<RandomizerCheck>(pl.loc);
+            // splitmix-style state keyed on (seed, check) — deterministic across reloads + non-zero.
+            uint64_t state = d.seed ^ (static_cast<uint64_t>(pl.loc) * 0x9E3779B97F4A7C15ULL + 0x165667B19E3779F9ULL);
+            if (state == 0) {
+                state = 0x9E3779B97F4A7C15ULL;
+            }
+            // Pick directly from our named-only model set (NOT GetTrapTrickModel, whose reroll
+            // special-cases can yield an unnamed model and trip GetTrapName's assert).
+            RandomizerGet model = ShipUtils::RandomElementFromSet(ctx->possibleIceTrapModels, &state);
+            Rando::ItemOverride ov(rc, model);
+            ov.SetTrickName(Rando::Traps::GetTrapName(static_cast<uint16_t>(model), &state));
+            ctx->iceTrapModels[rc] = model;
+            ctx->overrides[rc] = ov;
+        }
+    }
+
+    // Restore already-collected checks so the suppression VBs see HasObtained() and despawn
+    // them. This re-fires OnRandoSetCheckStatus, but the collected set was restored first
+    // (LoadMultiship runs before OnLoadGame), so the report hook treats them as already-handled.
+    std::vector<int> collected = MultiShipSeed::GetCollected();
+    for (int rc : collected) {
+        Rando::ItemLocation* loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(rc));
+        if (loc != nullptr) {
+            loc->SetCheckStatus(RCSHOW_COLLECTED);
+        }
+    }
+    SPDLOG_INFO("[MultiShip] Applied {} world-{} placements to Context ({} already collected)", placed,
+                d.worldId, static_cast<int>(collected.size()));
+}
 
 void MultiShip::Connect() {
     // The "Connect" menu button toggles the connection. The underlying Network
@@ -232,6 +364,11 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
                 std::string who = payload.value("playerName", std::string());
                 MultiShipSeed::SetStatus("Seed received (world " + std::to_string(worldId + 1) +
                                          (who.empty() ? "" : ": " + who) + ")");
+                // F-040: feed the placements into the rando Context, but only on the main
+                // thread (touching Context / firing hooks from this network thread is unsafe).
+                // If a MultiShip file is already loaded (reconnect mid-game), the frame hook
+                // applies it; otherwise the upcoming file load's OnLoadGame applies it.
+                gNeedsContextApply.store(true);
             } else {
                 MultiShipSeed::SetStatus("Seed receive failed: " + (err.empty() ? "empty data" : err));
                 SPDLOG_ERROR("[MultiShip] Failed to deserialize seed: {}", err);
@@ -368,10 +505,68 @@ void MultiShip::RegisterHooks() {
     // false here. We must NOT gate on it or the packet is never sent. The selected
     // file's quest is already populated in gSaveContext at this point.
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnLoadGame>([&](int32_t fileNum) {
-        if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP)
+        if (gSaveContext.ship.quest.id != QUEST_MULTISHIP)
             return;
-        SendOnLoadGame();
+        // F-040: feed our world's placements into the rando Context now (main thread, save
+        // loaded). LoadMultiship already restored the seed + collected set for an existing
+        // file; for a just-created file the seed is in memory from the live receive. Granting
+        // own items locally works even while disconnected, so this is NOT gated on isConnected.
+        gNeedsContextApply.store(false);
+        MultiShip_ApplyPlacementsToContext();
+        if (isConnected) {
+            SendOnLoadGame();
+        }
     });
+
+    // F-040: apply placements to the Context when a seed arrives LIVE while a MultiShip file
+    // is already loaded (reconnect mid-game) — the network thread can't touch the Context, so
+    // it sets a flag that we consume here on the main thread.
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>([&]() {
+        if (gSaveContext.ship.quest.id != QUEST_MULTISHIP || !GameInteractor::IsSaveLoaded()) {
+            return;
+        }
+        if (gNeedsContextApply.exchange(false)) {
+            MultiShip_ApplyPlacementsToContext();
+        }
+    });
+
+    // F-040: a collected check (RandomizerCheck) reaches RCSHOW_COLLECTED/SAVED — for our own
+    // items the native pipeline set it on receipt; for foreign items the hook_handlers intercept
+    // set it after suppressing the give. Record it (idempotency, persisted in the multiship
+    // section) and, for a FOREIGN item, report the collection to the server exactly once so it
+    // can route the item to its owner. Not gated on isConnected for recording (own items can be
+    // collected offline); the report itself requires a connection.
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnRandoSetCheckStatus>(
+        [&](RandomizerCheck rc, RandomizerCheckStatus status) {
+            if (gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+                return;
+            }
+            if (status != RCSHOW_COLLECTED && status != RCSHOW_SAVED) {
+                return;
+            }
+            const int check = static_cast<int>(rc);
+            const int owner = MultiShip_GetCheckOwner(check);
+            if (owner < 0) {
+                return;  // not one of our seed's placements — ignore vanilla collections
+            }
+            if (MultiShipSeed::IsCollected(check)) {
+                return;  // already handled — grant/report exactly once across reloads/reconnects
+            }
+            if (owner != MultiShip_GetMyWorld() && isConnected) {
+                // Foreign item: report the collection so the server delivers it to its owner.
+                nlohmann::json payload;
+                payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+                payload["type"] = "hook";
+                payload["hook"]["type"] = "OnCheckCollected";
+                payload["hook"]["check"] = check;
+                payload["hook"]["world"] = MultiShip_GetMyWorld();
+                SPDLOG_INFO("[MultiShip] Reporting collected foreign check {} (owner world {}, my world {})",
+                            check, owner, MultiShip_GetMyWorld());
+                SendJsonToRemote(payload);
+            }
+            MultiShipSeed::MarkCollected(check);
+            SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_MULTISHIP, true);
+        });
 
     // Deliver queued server items by RE-ATTEMPTING the front item every frame Link is able
     // to start a get-item — exactly like SoH's own randomizer item delivery
@@ -454,7 +649,19 @@ void MultiShip::RegisterHooks() {
     // Match the received item to the front delivery so an unrelated world pickup can't pop
     // it, and advance the persisted seq only for tracked stream deliveries.
     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnItemReceive>([&](GetItemEntry itemEntry) {
-        if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+        if (gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+            return;
+        }
+        // Some rando "items" are vanilla equipment upgrades for us (strength → UPG_STRENGTH): the
+        // give only sets a RAND_INF flag, so translate it to the vanilla upgrade here so it shows
+        // in the equipment subscreen + takes effect. Runs for BOTH locally-collected and
+        // server-delivered items, and even while disconnected (own items work offline).
+        Randomizer_MultiShipApplyVanillaUpgrade(static_cast<int>(itemEntry.modIndex),
+                                                static_cast<int>(itemEntry.getItemId));
+
+        // The remainder is the F-030 crash-safe delivery pop, which only applies to items the
+        // server pushed to us — so it needs an active connection + a queued delivery.
+        if (!isConnected) {
             return;
         }
         std::lock_guard<std::mutex> lk(gDeliveryMutex);

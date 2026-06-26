@@ -408,6 +408,90 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
 }
 
 #ifdef ENABLE_MULTISHIP
+// Defined in soh/Network/MultiShip/MultiShip.cpp (plain C++ linkage). When we collect a check
+// in our own world, these tell the reused rando item pipeline which world OWNS the item there,
+// so a foreign item is suppressed + reported to the server instead of granted to us locally.
+int MultiShip_GetCheckOwner(int check);  // owner world of the item at our-world `check`, -1 if none
+int MultiShip_GetMyWorld(void);          // our world index, -1 if no seed
+
+// The GIVanillaBehavior ids that perform check item collection/replacement. In a MultiShip game
+// (F-040, item flow only) we reuse ONLY these from RandomizerOnVanillaBehaviorHandler and leave
+// every other vanilla behavior at its default, so no randomizer game-behavior change leaks in.
+// The non-self-gated cases (item00 / b-heart) additionally require IsLocationShuffled below so a
+// location NOT placed in our seed is left fully vanilla (never consumed without granting).
+static bool MultiShipIsItemFlowVB(GIVanillaBehavior id) {
+    switch (id) {
+        case VB_GIVE_ITEM_FROM_CHEST:
+        case VB_ITEM00_DESPAWN:
+        case VB_GIVE_ITEM_FROM_ITEM_00:
+        case VB_ITEM_B_HEART_DESPAWN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Foreign-item one-shot flag (F-040 presentation). When we collect a check whose item belongs
+// to another world, we STILL run the get-item animation + textbox (so the player sees what they
+// found going to whom), but z_player (func_8083E298) must skip ONLY the inventory add — the
+// server delivers the item to its owner. Set just before the give in the item-queue handler,
+// read by the get-item textbox builder (BuildCustomItemMessage, to show "<Player>'s <item>"),
+// and CONSUMED by z_player the same place ice traps skip their give. -1 = our own item (no skip).
+static s32 gForeignItemOwner = -1;
+// The check (RandomizerCheck) backing the current foreign get-item, captured next to the owner
+// so the get-item textbox can resolve a disguised ice trap's fake model/name from the rando
+// Context override (the queued check is cleared before the textbox opens). -1 when not foreign.
+static s32 gForeignItemCheck = -1;
+extern "C" void Randomizer_SetForeignItemGet(s32 ownerWorld) {
+    gForeignItemOwner = ownerWorld;
+}
+extern "C" void Randomizer_SetForeignItemCheck(s32 check) {
+    gForeignItemCheck = check;
+}
+extern "C" s32 Randomizer_GetForeignItemOwner(void) {
+    return gForeignItemOwner;
+}
+extern "C" s32 Randomizer_GetForeignItemCheck(void) {
+    return gForeignItemCheck;
+}
+extern "C" s32 Randomizer_ConsumeForeignItemGet(void) {
+    s32 owner = gForeignItemOwner;
+    gForeignItemOwner = -1;
+    return owner >= 0 ? 1 : 0;
+}
+
+// MultiShip (item flow): the strength upgrade is a vanilla EQUIPMENT upgrade for us — it shows in
+// the equipment subscreen and gates lifting via UPG_STRENGTH. But rando delivers the first tier as
+// RG_POWER_BRACELET, which Randomizer_Item_Give maps to the RAND_INF_CAN_GRAB flag only (it never
+// touches UPG_STRENGTH), so without the rest of the rando game-behavior layer it has no effect.
+// Translate a received strength tier to the vanilla UPG_STRENGTH so it actually takes effect.
+// Called from MultiShip's OnItemReceive (fires for both locally-collected and server-delivered
+// items). max() keeps it idempotent + order-independent; gauntlet tiers that arrive as MOD_NONE
+// already set UPG_STRENGTH via vanilla Item_Give, so this is a no-op for them.
+extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getItemId) {
+    if (modIndex != MOD_RANDOMIZER) {
+        return;
+    }
+    s16 tier = 0;
+    switch (getItemId) {
+        case RG_POWER_BRACELET:
+        case RG_GORONS_BRACELET:
+            tier = 1;
+            break;
+        case RG_SILVER_GAUNTLETS:
+            tier = 2;
+            break;
+        case RG_GOLDEN_GAUNTLETS:
+            tier = 3;
+            break;
+        default:
+            return;
+    }
+    if (CUR_UPG_VALUE(UPG_STRENGTH) < tier) {
+        Inventory_ChangeUpgrade(UPG_STRENGTH, tier);
+    }
+}
+
 // True when Link is in-game and able to START receiving an item right now. The MultiShip
 // delivery drain (MultiShip.cpp) gates on this and re-ATTEMPTS the give every frame this
 // is true (exactly like SoH's own randomizer item delivery,
@@ -501,6 +585,28 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         return;
     }
 
+#ifdef ENABLE_MULTISHIP
+    // F-040: in a MultiShip game the item at this check may belong to ANOTHER world. We still run
+    // the get-item animation + textbox (so the player sees "You found <Player>'s <item>!"), but
+    // the item must NOT enter our inventory — the server delivers it to its owner. Arm the
+    // one-shot foreign flag so z_player skips ONLY the inventory add (the same place ice traps
+    // skip theirs); reset it to -1 for our own items so their give isn't skipped.
+    bool multiShipForeign = false;
+    if (IS_MULTISHIP) {
+        const int owner = MultiShip_GetCheckOwner(static_cast<int>(randomizerQueuedCheck));
+        const int myWorld = MultiShip_GetMyWorld();
+        multiShipForeign = (owner >= 0 && myWorld >= 0 && owner != myWorld);
+        Randomizer_SetForeignItemGet(multiShipForeign ? owner : -1);
+        // Remember the check so the get-item textbox can read this foreign item's ice-trap
+        // disguise (the rando Context override) once randomizerQueuedCheck is cleared below.
+        Randomizer_SetForeignItemCheck(multiShipForeign ? static_cast<s32>(randomizerQueuedCheck) : -1);
+        if (multiShipForeign) {
+            SPDLOG_INFO("[MultiShip] Foreign item at RC {} (owner world {}, my world {}) — animate + report",
+                        static_cast<uint32_t>(randomizerQueuedCheck), owner, myWorld);
+        }
+    }
+#endif
+
     SPDLOG_INFO("Attempting to give Item mod {} item {} from RC {}", randomizerQueuedItemEntry.modIndex,
                 randomizerQueuedItemEntry.itemId, static_cast<uint32_t>(randomizerQueuedCheck));
     GiveItemEntryWithoutActor(gPlayState, randomizerQueuedItemEntry);
@@ -509,6 +615,18 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
         player->stateFlags2 |= PLAYER_STATE2_UNDERWATER;
         Player_ActionHandler_2(player, gPlayState);
     }
+
+#ifdef ENABLE_MULTISHIP
+    if (multiShipForeign) {
+        // z_player skips the inventory add for a foreign item, so OnItemReceive won't fire to
+        // mark/clear. Do it here: SetCheckStatus fires OnRandoSetCheckStatus (MultiShip records +
+        // reports the collection to the server). Clear the queue so the next check can stage once
+        // this get-item finishes — the player is in GETTING_ITEM, so nothing delivers mid-animation.
+        Rando::Context::GetInstance()->GetItemLocation(randomizerQueuedCheck)->SetCheckStatus(RCSHOW_COLLECTED);
+        randomizerQueuedCheck = RC_UNKNOWN_CHECK;
+        randomizerQueuedItemEntry = GET_ITEM_NONE;
+    }
+#endif
 }
 
 void RandomizerOnItemReceiveHandler(GetItemEntry receivedItemEntry) {
@@ -521,10 +639,20 @@ void RandomizerOnItemReceiveHandler(GetItemEntry receivedItemEntry) {
         SPDLOG_INFO("Item received mod {} item {} from RC {}", receivedItemEntry.modIndex, receivedItemEntry.itemId,
                     static_cast<uint32_t>(randomizerQueuedCheck));
         loc->SetCheckStatus(RCSHOW_COLLECTED);
-        CheckTracker::SpoilAreaFromCheck(randomizerQueuedCheck);
-        CheckTracker::RecalculateAllAreaTotals();
-        CheckTracker::RecalculateAvailableChecks();
-        SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_TRACKER_DATA, true);
+#ifdef ENABLE_MULTISHIP
+        // The rando check-tracker recalcs (esp. RecalculateAvailableChecks' region-graph logic
+        // search) assume a finalized seed and are pure tracker-UI bookkeeping — skip them in a
+        // MultiShip game (item flow only). SetCheckStatus above already fired OnRandoSetCheckStatus,
+        // where MultiShip records the collection into its persisted set. The status itself still
+        // persists via the trackerData section on the next save.
+        if (!IS_MULTISHIP)
+#endif
+        {
+            CheckTracker::SpoilAreaFromCheck(randomizerQueuedCheck);
+            CheckTracker::RecalculateAllAreaTotals();
+            CheckTracker::RecalculateAvailableChecks();
+            SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_TRACKER_DATA, true);
+        }
         randomizerQueuedCheck = RC_UNKNOWN_CHECK;
         randomizerQueuedItemEntry = GET_ITEM_NONE;
     }
@@ -1049,6 +1177,16 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
     va_list args;
     va_copy(args, originalArgs);
 
+#ifdef ENABLE_MULTISHIP
+    // MultiShip reuses this handler for item flow only: process just the check
+    // collection/replacement behaviors and leave every other vanilla behavior at its
+    // default, so no randomizer game-behavior change leaks into a MultiShip game.
+    if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id)) {
+        va_end(args);
+        return;
+    }
+#endif
+
     switch (id) {
         case VB_CLIMB:
             if (RAND_GET_OPTION(RSK_SHUFFLE_CLIMB) && !Flags_GetRandomizerInf(RAND_INF_CAN_CLIMB)) {
@@ -1219,7 +1357,15 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
             if (item00->actor.params == ITEM00_HEART_PIECE || item00->actor.params == ITEM00_SMALL_KEY) {
                 RandomizerCheck rc = OTRGlobals::Instance->gRandomizer->GetCheckFromActor(
                     item00->actor.id, gPlayState->sceneNum, item00->ogParams);
-                if (rc != RC_UNKNOWN_CHECK) {
+                // In a MultiShip game only PLACED locations are taken over; a location not in
+                // our seed must stay fully vanilla (otherwise it would be consumed with no
+                // item, since the RC queue won't grant an unplaced check). No-op for rando,
+                // where every real location is placed.
+                bool msAllowed = true;
+#ifdef ENABLE_MULTISHIP
+                msAllowed = !IS_MULTISHIP || OTRGlobals::Instance->gRandoContext->IsLocationShuffled(rc);
+#endif
+                if (rc != RC_UNKNOWN_CHECK && msAllowed) {
                     item00->randoInf = RAND_INF_MAX;
                     item00->actor.params = ITEM00_SOH_DUMMY;
                     item00->itemEntry = Rando::Context::GetInstance()->GetFinalGIEntry(
@@ -1239,7 +1385,13 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
             ItemBHeart* itemBHeart = va_arg(args, ItemBHeart*);
             RandomizerCheck rc = OTRGlobals::Instance->gRandomizer->GetCheckFromActor(
                 itemBHeart->actor.id, gPlayState->sceneNum, itemBHeart->actor.params);
-            if (rc != RC_UNKNOWN_CHECK) {
+            // MultiShip: only take over a PLACED location; leave an unplaced heart container
+            // fully vanilla (no-op for rando, where the location is always placed).
+            bool msBHeartAllowed = true;
+#ifdef ENABLE_MULTISHIP
+            msBHeartAllowed = !IS_MULTISHIP || OTRGlobals::Instance->gRandoContext->IsLocationShuffled(rc);
+#endif
+            if (rc != RC_UNKNOWN_CHECK && msBHeartAllowed) {
                 itemBHeart->sohItemEntry = Rando::Context::GetInstance()->GetFinalGIEntry(
                     rc, true, (GetItemID)Rando::StaticData::GetLocation(rc)->GetVanillaItem());
                 itemBHeart->actor.draw = (ActorFunc)ItemBHeart_DrawRandomizedItem;
@@ -2953,8 +3105,33 @@ static void RandomizerRegisterHooks() {
         onKaleidoUpdateHook = 0;
         onCuccoOrChickenHatchHook = 0;
 
-        if (!IS_RANDO)
+        if (!IS_RANDO) {
+#ifdef ENABLE_MULTISHIP
+            // F-040: a MultiShip file is NOT IS_RANDO, but it reuses the randomizer's check
+            // detection + give-item replacement for ITEM FLOW ONLY. Register just that subset
+            // here; the Context placements are fed from the F-035 store (MultiShip.cpp). The
+            // game-behavior hooks below (entrance rando, scene/actor/frame/dialog handlers, the
+            // FULL VanillaBehavior behavior set) are intentionally NOT registered — that is a
+            // separate phase. The OnVanillaBehavior handler IS registered but self-limits to the
+            // item-collection behaviors via the MultiShipIsItemFlowVB guard at its top.
+            if (IS_MULTISHIP) {
+                onFlagSetHook =
+                    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnFlagSet>(RandomizerOnFlagSetHandler);
+                onSceneFlagSetHook = GameInteractor::Instance->RegisterGameHook<GameInteractor::OnSceneFlagSet>(
+                    RandomizerOnSceneFlagSetHandler);
+                onPlayerUpdateForRCQueueHook = GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayerUpdate>(
+                    RandomizerOnPlayerUpdateForRCQueueHandler);
+                onPlayerUpdateForItemQueueHook =
+                    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnPlayerUpdate>(
+                        RandomizerOnPlayerUpdateForItemQueueHandler);
+                onItemReceiveHook = GameInteractor::Instance->RegisterGameHook<GameInteractor::OnItemReceive>(
+                    RandomizerOnItemReceiveHandler);
+                onVanillaBehaviorHook = GameInteractor::Instance->RegisterGameHook<GameInteractor::OnVanillaBehavior>(
+                    RandomizerOnVanillaBehaviorHandler);
+            }
+#endif
             return;
+        }
 
         // ENTRTODO: Move all entrance rando handling to a dedicated file
         // Setup the modified entrance table and entrance shuffle table for rando

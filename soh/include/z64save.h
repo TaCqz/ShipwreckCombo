@@ -378,6 +378,13 @@ typedef enum {
 #define IS_MASTER_QUEST (gSaveContext.ship.quest.id == QUEST_MASTER)
 #define IS_RANDO (gSaveContext.ship.quest.id == QUEST_RANDOMIZER)
 #define IS_BOSS_RUSH (gSaveContext.ship.quest.id == QUEST_BOSSRUSH)
+#ifdef ENABLE_MULTISHIP
+// A MultiShip file is a networking overlay on a vanilla save: it is intentionally NOT
+// IS_RANDO. This macro gates the additive item-flow reuse (check detection + give-item
+// replacement) that F-040 wires onto the native randomizer pipeline without enabling the
+// rest of the randomizer (local seed gen, rando menus, game-behavior settings).
+#define IS_MULTISHIP (gSaveContext.ship.quest.id == QUEST_MULTISHIP)
+#endif
 
 typedef enum {
     /* 0x00 */ BTN_ENABLED,

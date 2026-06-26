@@ -12,6 +12,10 @@
 namespace Rando {
 namespace Traps {
 Text GetTrapName(uint16_t id, uint64_t* state = nullptr);
+// True if `id` (a RandomizerGet / GetItemID) has trick names defined, i.e. it's a valid ice-trap
+// disguise model. GetTrapName asserts on ids without names, so a caller building its own disguise
+// model pool (e.g. MultiShip) must filter with this first. Initializes the trick-name table.
+bool HasTrapName(uint16_t id);
 RandomizerGet GetTrapTrickModel(uint64_t* state = nullptr);
 bool ShouldJunkItemBeTrap();
 void BuildIceTrapMessage(CustomMessage& msg, GetItemEntry getItemEntry);

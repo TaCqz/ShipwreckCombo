@@ -27,6 +27,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace MultiShipSeed {
 
@@ -81,6 +82,17 @@ void LoadFromSnapshot(const Data& data);
 // Forget everything (e.g. leaving a multiworld file). Leaves knownPlayers intact only
 // if still connected — callers decide; this clears the full-seed half.
 void Clear();
+
+// --- Collected checks (F-040) ------------------------------------------------------
+// The set of RandomizerCheck ids (ints) we've already collected in our own world. This
+// is the idempotency guard so a check grants/reports exactly once across reloads and
+// reconnects. Persisted in the SaveManager "multiship" section alongside the seed.
+// Thread-safe (the main-thread item pipeline writes it; SaveManager reads it).
+void MarkCollected(int check);
+bool IsCollected(int check);
+std::vector<int> GetCollected();
+void SetCollected(const std::vector<int>& checks);
+void ClearCollected();
 
 // --- Request lifecycle status (for the 'Start Multiworld Save' menu) ---------------
 // A short human-readable line describing the last request outcome ("Requesting…",

@@ -15,6 +15,7 @@ std::string gSeedIdInfo;                 // seed id from the seed-info push
 std::vector<std::string> gKnownPlayers;  // world names from the seed-info push (for validation)
 MultiShipSeed::Data gData;               // the full deserialized seed (gData.ready once present)
 std::string gStatus;                     // last 'Start Multiworld Save' request status line
+std::set<int> gCollected;                // F-040: RandomizerCheck ids already collected in our world
 
 // --- base64 (RFC 4648, standard alphabet, '=' padding). The server base64-encodes the
 // v3 blob because the transport is NUL-delimited and the raw bytes contain '\0'. ------
@@ -178,6 +179,9 @@ bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string
     {
         std::lock_guard<std::mutex> lk(gMutex);
         gData = std::move(d);
+        // A freshly received seed is a brand-new world: start with no collected checks.
+        // The load path (SetCollected from the save) overwrites this for an existing file.
+        gCollected.clear();
     }
     SPDLOG_INFO("[MultiShip] Deserialized v3 seed {} (worldId {}, {} players, {} placements, {} settings)",
                 sid, worldId, (int)numWorlds, (int)placementCount, (int)settingCount);
@@ -203,6 +207,31 @@ void LoadFromSnapshot(const Data& data) {
 void Clear() {
     std::lock_guard<std::mutex> lk(gMutex);
     gData = Data{};
+}
+
+void MarkCollected(int check) {
+    std::lock_guard<std::mutex> lk(gMutex);
+    gCollected.insert(check);
+}
+
+bool IsCollected(int check) {
+    std::lock_guard<std::mutex> lk(gMutex);
+    return gCollected.count(check) != 0;
+}
+
+std::vector<int> GetCollected() {
+    std::lock_guard<std::mutex> lk(gMutex);
+    return std::vector<int>(gCollected.begin(), gCollected.end());
+}
+
+void SetCollected(const std::vector<int>& checks) {
+    std::lock_guard<std::mutex> lk(gMutex);
+    gCollected = std::set<int>(checks.begin(), checks.end());
+}
+
+void ClearCollected() {
+    std::lock_guard<std::mutex> lk(gMutex);
+    gCollected.clear();
 }
 
 void SetStatus(const std::string& status) {
