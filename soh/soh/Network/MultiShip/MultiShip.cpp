@@ -85,6 +85,13 @@ extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getIte
 // path. Defined in soh/Enhancements/randomizer/savefile.cpp. The reward RandomizerGet comes from the
 // RC_LINKS_POCKET placement; this side owns the once-per-save guard (MultiShip_GrantStartingReward).
 extern "C" void Randomizer_MultiShipGiveStartingReward(int rgItem);
+// Bakes the one-time area-access world-state flags (open forest Mido block, Door of Time, Kakariko
+// gate, Gerudo carpenters) from the live Rando::Context settings (F-043). Defined in savefile.cpp;
+// idempotent + "open"-only so it is safe to re-run. We call it after applying the synced settings.
+extern "C" void Randomizer_ApplyAreaAccessWorldState();
+// Configures Ganon's Trials from the synced RSK_TRIAL_COUNT (F-043b): marks that many trials
+// required + bakes the COMPLETED flag for the skipped ones. Defined in savefile.cpp; idempotent.
+extern "C" void Randomizer_MultiShipApplyTrials();
 
 // --- F-040 cross-world item flow ---------------------------------------------------
 // Set on the network thread when a full seed is (re)received; consumed on the main thread
@@ -121,6 +128,67 @@ int MultiShip_GetCheckOwner(int check) {
         }
     }
     return -1;
+}
+
+// F-043: make the in-game world match the seed's "area access" settings (open forest, Kakariko
+// gate, Door of Time, Zora's Fountain, sleeping waterfall, Jabu-Jabu, fortress carpenters).
+//
+// Two mechanisms, both fed from the synced F-035 settings store:
+//   (1) Several effects are LIVE reads of the randomizer Context at actor-init / VanillaBehavior
+//       time (King Zora, the waterfall/Jabu actor-update hooks, the forest Mido/exit-boy VBs, the
+//       Door-of-Time eligibility VB). The native Context is otherwise left empty in a MultiShip
+//       game (F-040 only fills placements), so we copy the server's settings into it here — the
+//       VBs/actor hooks (gated for IS_MULTISHIP in hook_handlers / timesaver_hook_handlers) then
+//       read the correct values, exactly like standard rando.
+//   (2) The rest are ONE-TIME event/scene flags baked at save init (forest Mido flags, the
+//       Door-of-Time-open flag, the Kakariko-gate inf flag, the freed carpenters). Those are NOT
+//       re-derived by the live-settings copy, so we re-bake them via the shared, idempotent,
+//       "open"-only Randomizer_ApplyAreaAccessWorldState (extracted from Randomizer_InitSaveFile).
+//
+// Called from MultiShip_ApplyPlacementsToContext, which runs both at file load (OnLoadGame) and
+// when a seed arrives live mid-game (OnGameFrameUpdate). So whether the player creates-then-connects
+// or connects-then-creates, the world is corrected — at load and again the moment settings arrive.
+// The flag effects show up on the next scene load; the live-read effects self-heal the same way
+// (the forest exit-boy has its own per-frame re-check in z_en_ko.c since the forest can't re-init).
+// Main thread only (touches gRandoContext + gSaveContext).
+static void MultiShip_ApplyAreaAccessWorldState() {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return;
+    }
+    auto ctx = Rando::Context::GetInstance();
+    if (ctx == nullptr) {
+        return;
+    }
+    // Copy ONLY the area-access keys into the live Context — the minimal set the VBs / actor hooks /
+    // the bake / the trial setup actually read. We deliberately do NOT copy the rest of the
+    // settings: F-040 keeps the Context settings-empty and drives item flow purely from placements,
+    // and several other registered handlers (flag-set, item queue) branch on settings, so leaving
+    // them at 0 preserves the established item-flow behavior. (The carpenter bake's Gerudo-card
+    // branch reads RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD, but only under Carpenters=Free, which the
+    // curated UI can't select — so it's unreachable here and needs no copy.) The Rainbow Bridge keys
+    // feed the in-game bridge-eligibility VB; RSK_GANONS_TRIALS/RSK_TRIAL_COUNT feed the trial setup.
+    static const RandomizerSettingKey kAreaAccessKeys[] = {
+        RSK_FOREST, RSK_KAK_GATE, RSK_DOOR_OF_TIME, RSK_ZORAS_FOUNTAIN,
+        RSK_SLEEPING_WATERFALL, RSK_JABU_OPEN, RSK_GERUDO_FORTRESS,
+        RSK_RAINBOW_BRIDGE, RSK_RAINBOW_BRIDGE_STONE_COUNT, RSK_RAINBOW_BRIDGE_MEDALLION_COUNT,
+        RSK_GANONS_TRIALS, RSK_TRIAL_COUNT,
+    };
+    int copied = 0;
+    for (const auto& s : d.settings) {
+        for (RandomizerSettingKey k : kAreaAccessKeys) {
+            if (s.key == (int)k) {
+                ctx->GetOption(k).Set(static_cast<uint8_t>(s.value));
+                ++copied;
+                break;
+            }
+        }
+    }
+    // Re-bake the one-time world-state flags (forest/DoT/Kakariko/carpenters) from those settings,
+    // then set up Ganon's Trials (required count + skipped-trial barriers) from RSK_TRIAL_COUNT.
+    Randomizer_ApplyAreaAccessWorldState();
+    Randomizer_MultiShipApplyTrials();
+    SPDLOG_INFO("[MultiShip] Applied {} area-access settings to Context + re-baked world state", copied);
 }
 
 // Populate the (otherwise empty) randomizer Context with our world's placements so the
@@ -202,6 +270,10 @@ static void MultiShip_ApplyPlacementsToContext() {
     }
     SPDLOG_INFO("[MultiShip] Applied {} world-{} placements to Context ({} already collected)", placed,
                 d.worldId, static_cast<int>(collected.size()));
+
+    // F-043: now that the Context exists, also apply the synced area-access settings + re-bake the
+    // matching world-state flags so the game world matches the seed (open forest, fountain, etc.).
+    MultiShip_ApplyAreaAccessWorldState();
 }
 
 // F-041: grant this world's starting dungeon reward, placed by the generator at RC_LINKS_POCKET

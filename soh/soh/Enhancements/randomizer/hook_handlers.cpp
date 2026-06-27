@@ -431,6 +431,27 @@ static bool MultiShipIsItemFlowVB(GIVanillaBehavior id) {
     }
 }
 
+// F-043: the VanillaBehaviors that implement the "area access" settings as LIVE reads of the
+// Rando::Context (forest Mido + exit boy, King Zora / Zora's Fountain, the Door-of-Time
+// eligibility, the Rainbow Bridge eligibility). MultiShip populates the Context with the synced
+// settings (MultiShip.cpp), so letting these cases run makes the world match the seed. Each case
+// below reads RAND_GET_OPTION and is NOT internally IS_RANDO-gated, and the actor call sites are
+// unconditional, so allowing them here is sufficient. (Waterfall + Jabu are separate OnActorUpdate
+// hooks, not VBs; Ganon's Trials use baked COMPLETED flags, not a VB.)
+static bool MultiShipIsAreaAccessVB(GIVanillaBehavior id) {
+    switch (id) {
+        case VB_MIDO_SPAWN:
+        case VB_MOVE_MIDO_IN_KOKIRI_FOREST:
+        case VB_OPEN_KOKIRI_FOREST:
+        case VB_KING_ZORA_BE_MOVED:
+        case VB_BE_ELIGIBLE_TO_OPEN_DOT:
+        case VB_BE_ELIGIBLE_FOR_RAINBOW_BRIDGE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Foreign-item one-shot flag (F-040 presentation). When we collect a check whose item belongs
 // to another world, we STILL run the get-item animation + textbox (so the player sees what they
 // found going to whom), but z_player (func_8083E298) must skip ONLY the inventory add — the
@@ -1188,10 +1209,10 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
     va_copy(args, originalArgs);
 
 #ifdef ENABLE_MULTISHIP
-    // MultiShip reuses this handler for item flow only: process just the check
-    // collection/replacement behaviors and leave every other vanilla behavior at its
-    // default, so no randomizer game-behavior change leaks into a MultiShip game.
-    if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id)) {
+    // MultiShip reuses this handler for item flow (F-040) and the area-access settings (F-043)
+    // only: process just those behaviors and leave every other vanilla behavior at its default,
+    // so no other randomizer game-behavior change leaks into a MultiShip game.
+    if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id) && !MultiShipIsAreaAccessVB(id)) {
         va_end(args);
         return;
     }

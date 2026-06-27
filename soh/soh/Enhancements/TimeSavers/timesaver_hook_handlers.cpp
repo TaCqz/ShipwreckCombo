@@ -983,8 +983,13 @@ void TimeSaverOnActorInitHandler(void* actorRef) {
                     return;
                 }
 
-                bool shouldOpen = IS_RANDO ? RAND_GET_OPTION(RSK_JABU_OPEN).Get()
-                                           : CVarGetInteger(CVAR_ENHANCEMENT("TimeSavers.SkipJabuJabuFish"), 0);
+                // F-043: a MultiShip game honors the synced RSK_JABU_OPEN just like rando does.
+                bool useRandoSetting = IS_RANDO;
+#ifdef ENABLE_MULTISHIP
+                useRandoSetting = useRandoSetting || IS_MULTISHIP;
+#endif
+                bool shouldOpen = useRandoSetting ? RAND_GET_OPTION(RSK_JABU_OPEN).Get()
+                                                  : CVarGetInteger(CVAR_ENHANCEMENT("TimeSavers.SkipJabuJabuFish"), 0);
                 if (!shouldOpen) {
                     return;
                 }
@@ -1046,7 +1051,12 @@ void TimeSaverOnActorInitHandler(void* actorRef) {
                     return;
                 }
 
-                bool shouldKeepOpen = RAND_GET_OPTION(RSK_SLEEPING_WATERFALL) && IS_RANDO;
+                // F-043: a MultiShip game honors the synced RSK_SLEEPING_WATERFALL just like rando.
+                bool useRandoSetting = IS_RANDO;
+#ifdef ENABLE_MULTISHIP
+                useRandoSetting = useRandoSetting || IS_MULTISHIP;
+#endif
+                bool shouldKeepOpen = RAND_GET_OPTION(RSK_SLEEPING_WATERFALL) && useRandoSetting;
                 if (!shouldKeepOpen) {
                     int enhancement = CVarGetInteger(CVAR_ENHANCEMENT("TimeSavers.SleepingWaterfall"), 0);
                     shouldKeepOpen =
