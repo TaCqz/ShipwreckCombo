@@ -186,8 +186,10 @@ void Sram_OpenSave() {
     }
 
     // if zelda cutscene has been watched but lullaby was not obtained, restore cutscene and take away letter
+    // (skipped for rando AND MultiShip: Skip Child Zelda intentionally starts you with the Letter, and
+    // the lullaby may legitimately be elsewhere — so this vanilla fixup must not strip the Letter)
     if ((Flags_GetEventChkInf(EVENTCHKINF_OBTAINED_ZELDAS_LETTER)) && !CHECK_QUEST_ITEM(QUEST_SONG_LULLABY) &&
-        !IS_RANDO) {
+        !IS_RANDO && !IS_MULTISHIP) {
         i = gSaveContext.eventChkInf[4] & ~1;
         gSaveContext.eventChkInf[4] = i;
 
@@ -282,6 +284,11 @@ void Sram_InitSave(FileChooseContext* fileChooseCtx) {
         // in the slot until the next in-game save). persist=0: the Save_SaveFile() below persists
         // it (reward in the base section + the once-only marker in the multiship section, together).
         MultiShip_GrantStartingReward(0);
+        // F-044: apply the one-time starting state (adult age + Master Sword, full wallets, Skip
+        // Child Zelda letter/flags, completed masks) from the synced "Logic" settings, likewise
+        // before the creation save so an adult start spawns correctly and the grants are in the
+        // file from the start. persist=0: the Save_SaveFile() below persists it.
+        MultiShip_ApplyStartState(0);
     }
 #endif
 

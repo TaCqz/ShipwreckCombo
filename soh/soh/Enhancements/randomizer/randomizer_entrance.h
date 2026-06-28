@@ -34,6 +34,11 @@ extern "C" {
 #endif
 
 void Entrance_Init(void);
+#ifdef ENABLE_MULTISHIP
+// F-044: apply just the Skip Child Stealth entrance remap for a MultiShip save (which never runs
+// Entrance_Init). Reads the synced RSK_SKIP_CHILD_STEALTH from the live Context; idempotent.
+void Randomizer_MultiShipApplySkipChildStealth(void);
+#endif
 void Entrance_ResetEntranceTable(void);
 uint8_t Entrance_EntranceIsNull(EntranceOverride* entranceOverride);
 int16_t Entrance_GetOverride(int16_t index);

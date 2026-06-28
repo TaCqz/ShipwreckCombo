@@ -26,6 +26,11 @@ void Randomizer_MultiShipGiveStartingReward(int rgItem);
 // that many trials required and bakes the COMPLETED flag for the skipped ones (dispelling their
 // barriers). Caller applies the synced settings to the Context first. Idempotent.
 void Randomizer_MultiShipApplyTrials();
+
+// F-044: apply the one-time starting state for a MultiShip save from the synced "Logic" settings
+// (adult age + Master Sword, full wallets, Skip Child Zelda letter + lullaby + flags, completed
+// masks). Caller applies the synced settings to the Context first and guards this to run once.
+void Randomizer_MultiShipApplyStartState();
 #endif
 
 #ifdef __cplusplus

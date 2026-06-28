@@ -124,7 +124,10 @@ void func_808BAF40(BgTokiSwd* this, PlayState* play) {
         }
     }
 
-    if (!LINK_IS_ADULT || (Flags_GetEventChkInf(EVENTCHKINF_LEARNED_PRELUDE_OF_LIGHT) && !IS_RANDO) || IS_RANDO) {
+    // MultiShip (like rando) allows free time travel at the pedestal: an adult-start player never
+    // "learned Prelude of Light", so without IS_MULTISHIP the adult->child placement offers no action.
+    if (!LINK_IS_ADULT || (Flags_GetEventChkInf(EVENTCHKINF_LEARNED_PRELUDE_OF_LIGHT) && !IS_RANDO) || IS_RANDO ||
+        IS_MULTISHIP) {
         if (Actor_HasParent(&this->actor, play)) {
             if (!LINK_IS_ADULT) {
                 if (GameInteractor_Should(VB_GIVE_ITEM_MASTER_SWORD, true)) {

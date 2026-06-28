@@ -92,6 +92,14 @@ extern "C" void Randomizer_ApplyAreaAccessWorldState();
 // Configures Ganon's Trials from the synced RSK_TRIAL_COUNT (F-043b): marks that many trials
 // required + bakes the COMPLETED flag for the skipped ones. Defined in savefile.cpp; idempotent.
 extern "C" void Randomizer_MultiShipApplyTrials();
+// Applies the one-time starting state from the synced "Logic" settings (F-044): adult age + Master
+// Sword, full wallets, Skip Child Zelda letter + lullaby + flags, completed masks. Defined in
+// savefile.cpp; the caller copies the synced settings to the Context first + owns the once guard.
+extern "C" void Randomizer_MultiShipApplyStartState();
+// Applies the Skip Child Stealth entrance remap (F-044) from the live Context. Defined in
+// randomizer_entrance.c (MultiShip never runs Entrance_Init, so it isn't patched there). Idempotent;
+// reads RSK_SKIP_CHILD_STEALTH, so we call it after copying the synced settings to the Context.
+extern "C" void Randomizer_MultiShipApplySkipChildStealth();
 
 // --- F-040 cross-world item flow ---------------------------------------------------
 // Set on the network thread when a full seed is (re)received; consumed on the main thread
@@ -151,32 +159,38 @@ int MultiShip_GetCheckOwner(int check) {
 // The flag effects show up on the next scene load; the live-read effects self-heal the same way
 // (the forest exit-boy has its own per-frame re-check in z_en_ko.c since the forest can't re-init).
 // Main thread only (touches gRandoContext + gSaveContext).
-static void MultiShip_ApplyAreaAccessWorldState() {
+// Copy the synced honored settings into the live Context so the in-game reads — the VBs / actor
+// hooks, the area-access bake, the trial setup, and the F-044 save-init appliers — see the values
+// the seed was generated under. This is the minimal set those reads touch; we deliberately do NOT
+// copy the rest of the settings: F-040 keeps the Context settings-empty and drives item flow purely
+// from placements, and several other registered handlers (flag-set, item queue) branch on settings,
+// so leaving them at 0 preserves the established item-flow behavior. (The carpenter bake's
+// Gerudo-card branch reads RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD, but only under Carpenters=Free, which
+// the curated UI can't select.) The Rainbow Bridge keys feed the bridge-eligibility VB;
+// RSK_GANONS_TRIALS/RSK_TRIAL_COUNT feed the trial setup; the F-044 keys feed the logic batch.
+// Returns the count copied. Main thread only (touches gRandoContext).
+static int MultiShip_CopyHonoredSettingsToContext() {
     MultiShipSeed::Data d = MultiShipSeed::Snapshot();
-    if (!d.ready || d.worldId < 0) {
-        return;
-    }
     auto ctx = Rando::Context::GetInstance();
-    if (ctx == nullptr) {
-        return;
+    if (!d.ready || d.worldId < 0 || ctx == nullptr) {
+        return 0;
     }
-    // Copy ONLY the area-access keys into the live Context — the minimal set the VBs / actor hooks /
-    // the bake / the trial setup actually read. We deliberately do NOT copy the rest of the
-    // settings: F-040 keeps the Context settings-empty and drives item flow purely from placements,
-    // and several other registered handlers (flag-set, item queue) branch on settings, so leaving
-    // them at 0 preserves the established item-flow behavior. (The carpenter bake's Gerudo-card
-    // branch reads RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD, but only under Carpenters=Free, which the
-    // curated UI can't select — so it's unreachable here and needs no copy.) The Rainbow Bridge keys
-    // feed the in-game bridge-eligibility VB; RSK_GANONS_TRIALS/RSK_TRIAL_COUNT feed the trial setup.
-    static const RandomizerSettingKey kAreaAccessKeys[] = {
+    static const RandomizerSettingKey kHonoredKeys[] = {
         RSK_FOREST, RSK_KAK_GATE, RSK_DOOR_OF_TIME, RSK_ZORAS_FOUNTAIN,
         RSK_SLEEPING_WATERFALL, RSK_JABU_OPEN, RSK_GERUDO_FORTRESS,
         RSK_RAINBOW_BRIDGE, RSK_RAINBOW_BRIDGE_STONE_COUNT, RSK_RAINBOW_BRIDGE_MEDALLION_COUNT,
         RSK_GANONS_TRIALS, RSK_TRIAL_COUNT,
+        // F-044 — Tab 1 section 1.1 "Logic": Selected Starting Age (the resolved age the client
+        // applies), Mask Quest (mask-shop borrow logic), Skip Child Stealth (entrance remap) and
+        // Skip Epona Race (logic that lets Epona's Song summon her); Full Wallets + Skip Child Zelda
+        // drive one-time save-init grants/flags but are carried here too for a self-consistent
+        // Context, and Starting Age ships collapsed alongside Selected.
+        RSK_STARTING_AGE, RSK_SELECTED_STARTING_AGE, RSK_FULL_WALLETS, RSK_SKIP_CHILD_ZELDA,
+        RSK_MASK_QUEST, RSK_SKIP_CHILD_STEALTH, RSK_SKIP_EPONA_RACE,
     };
     int copied = 0;
     for (const auto& s : d.settings) {
-        for (RandomizerSettingKey k : kAreaAccessKeys) {
+        for (RandomizerSettingKey k : kHonoredKeys) {
             if (s.key == (int)k) {
                 ctx->GetOption(k).Set(static_cast<uint8_t>(s.value));
                 ++copied;
@@ -184,10 +198,24 @@ static void MultiShip_ApplyAreaAccessWorldState() {
             }
         }
     }
+    return copied;
+}
+
+static void MultiShip_ApplyAreaAccessWorldState() {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0 || Rando::Context::GetInstance() == nullptr) {
+        return;
+    }
+    int copied = MultiShip_CopyHonoredSettingsToContext();
     // Re-bake the one-time world-state flags (forest/DoT/Kakariko/carpenters) from those settings,
     // then set up Ganon's Trials (required count + skipped-trial barriers) from RSK_TRIAL_COUNT.
     Randomizer_ApplyAreaAccessWorldState();
     Randomizer_MultiShipApplyTrials();
+    // F-044: apply the Skip Child Stealth entrance remap (a live world-state read, like area access,
+    // re-applied each load — NOT a one-time save grant). The other F-044 logic-batch settings either
+    // bake at save init (Randomizer_MultiShipApplyStartState) or are read live from the Context by
+    // their own actors/logic (Mask Quest borrow, Skip Epona summon).
+    Randomizer_MultiShipApplySkipChildStealth();
     SPDLOG_INFO("[MultiShip] Applied {} area-access settings to Context + re-baked world state", copied);
 }
 
@@ -322,6 +350,42 @@ extern "C" void MultiShip_GrantStartingReward(int persist) {
     }
     SPDLOG_INFO("[MultiShip] Granted starting dungeon reward (RG {}) at Link's Pocket for world {}", rewardRg,
                 d.worldId);
+}
+
+// F-044: apply the one-time starting STATE (adult age + Master Sword, full wallets, Skip Child Zelda
+// letter/flags, completed masks) from the synced "Logic" settings — the MultiShip analog of the
+// per-setting blocks in Randomizer_InitSaveFile, which does not run for a QUEST_MULTISHIP file.
+// Granted ONCE per save (the persisted start-state marker), idempotent across reloads, exactly like
+// the F-041 reward. We copy the synced settings into the Context first so the savefile reader sees
+// them at BOTH file creation (z_sram.c, the Context isn't populated yet there) and load. Local
+// grants, so this runs even while disconnected. `persist`: nonzero -> persist with a full base save
+// (the OnLoadGame fallback); zero -> the caller's creation Save_SaveFile persists it. Main thread.
+extern "C" void MultiShip_ApplyStartState(int persist) {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready || d.worldId < 0) {
+        return;
+    }
+    // Once-only guard: the marker is persisted in the multiship section and restored before this
+    // runs, so a reload never re-grants the Master Sword / rupees / letter (the flag writes are
+    // idempotent anyway, but the item grants are not).
+    if (MultiShipSeed::IsStartStateApplied()) {
+        return;
+    }
+    if (Rando::Context::GetInstance() == nullptr) {
+        return;
+    }
+    // Ensure the synced settings are in the Context so Randomizer_GetSettingValue reads them — at
+    // file creation nothing else has populated it yet (placements/settings land at OnLoadGame).
+    MultiShip_CopyHonoredSettingsToContext();
+    Randomizer_MultiShipApplyStartState();
+    MultiShipSeed::SetStartStateApplied(true);
+    if (persist) {
+        // Full base save: the grants live in the base inventory/equip/scene-flag sections while the
+        // marker lives in the multiship section, and they must reach disk together (same reasoning
+        // as the F-041 reward). At file creation persist is 0 — the caller's Save_SaveFile does it.
+        SaveManager::Instance->SaveFile(gSaveContext.fileNum);
+    }
+    SPDLOG_INFO("[MultiShip] Applied starting state for world {}", d.worldId);
 }
 
 void MultiShip::Connect() {
@@ -664,6 +728,10 @@ void MultiShip::RegisterHooks() {
         // so this runs even while disconnected. New files are already granted at creation
         // (z_sram.c), so this is a fallback (e.g. legacy files); persist=1 so it saves itself.
         MultiShip_GrantStartingReward(1);
+        // F-044: apply the one-time starting state (adult age + Master Sword, full wallets, Skip
+        // Child Zelda letter/flags, completed masks). Like the reward it's also granted at creation
+        // (z_sram.c); persist=1 here is the fallback (the marker makes it a no-op once applied).
+        MultiShip_ApplyStartState(1);
         if (isConnected) {
             SendOnLoadGame();
         }

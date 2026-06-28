@@ -141,6 +141,24 @@ void Entrance_ResetEntranceTable(void) {
     }
 }
 
+#ifdef ENABLE_MULTISHIP
+// F-044: apply the Skip Child Stealth entrance remap for a MultiShip save. MultiShip is not
+// IS_RANDO, so it never runs Entrance_Init (hook_handlers.cpp returns before it) and the
+// courtyard-guards entrance is never patched there. Replicate just that one remap from the synced
+// setting (read from the live Context, which MultiShip populates before calling this). Idempotent —
+// it sets the same entry each load — and touches only this one entrance, leaving the rest of the
+// (otherwise vanilla) table alone. Called from MultiShip_ApplyAreaAccessWorldState.
+void Randomizer_MultiShipApplySkipChildStealth(void) {
+    if (!Randomizer_GetSettingValue(RSK_SKIP_CHILD_STEALTH)) {
+        return;
+    }
+    gEntranceTable[ENTR_CASTLE_COURTYARD_GUARDS_DAY_0].scene = SCENE_CASTLE_COURTYARD_ZELDA;
+    gEntranceTable[ENTR_CASTLE_COURTYARD_GUARDS_DAY_0].spawn = 0;
+    gEntranceTable[ENTR_CASTLE_COURTYARD_GUARDS_DAY_0].field =
+        ENTRANCE_INFO_FIELD(false, false, TRANS_TYPE_FADE_WHITE, TRANS_TYPE_FADE_WHITE);
+}
+#endif
+
 void Entrance_Init(void) {
     EntranceOverride* entranceOverrides = Randomizer_GetEntranceOverrides();
 

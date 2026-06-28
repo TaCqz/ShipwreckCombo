@@ -144,6 +144,11 @@ const char* MultiShip_StartingRewardName(void);
 // creation save, so the reward is in the saved file + slot metadata from the start; persist=1
 // elsewhere (the OnLoadGame fallback) to save it immediately.
 void MultiShip_GrantStartingReward(int persist);
+// F-044: apply the one-time starting state (adult age + Master Sword, full wallets, Skip Child Zelda
+// letter/flags, completed masks) from the synced "Logic" settings into gSaveContext. Once per save
+// (persisted marker). Call with persist=0 at file creation (Sram_InitSave) BEFORE the creation save
+// so the state is in the saved file; persist=1 elsewhere (the OnLoadGame fallback) to save it.
+void MultiShip_ApplyStartState(int persist);
 #endif
 uint8_t Randomizer_GenerateRandomizer();
 void Randomizer_ShowRandomizerMenu();

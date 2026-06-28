@@ -321,6 +321,14 @@ void KaleidoScope_HandleItemCycleExtras(PlayState* play, u8 slot, bool canCycle,
 }
 
 bool CanMaskSelect() {
+#ifdef ENABLE_MULTISHIP
+    // F-044: a MultiShip save is not IS_RANDO, but Mask Quest = Completed grants all masks up front
+    // at save init (Randomizer_MultiShipApplyStartState sets the trade slot + flags). Allow cycling
+    // them whenever the quest isn't Vanilla, skipping the vanilla letter/shop prerequisites below.
+    if (IS_MULTISHIP) {
+        return Randomizer_GetSettingValue(RSK_MASK_QUEST) != RO_MASK_QUEST_VANILLA;
+    }
+#endif
     if (IS_RANDO) {
         return ((CVarGetInteger(CVAR_ENHANCEMENT("MaskSelect"), 0) ||
                  Randomizer_GetSettingValue(RSK_MASK_QUEST) != RO_MASK_QUEST_VANILLA) &&
@@ -345,11 +353,14 @@ void KaleidoScope_HandleItemCycles(PlayState* play) {
     // handle the mask select
     KaleidoScope_HandleItemCycleExtras(
         play, SLOT_TRADE_CHILD, CanMaskSelect(),
-        IS_RANDO ? Randomizer_GetPrevChildTradeItem()
+        // MultiShip uses the rando trade cycle too (cycles every owned child-trade item by its
+        // RAND_INF flag, so the Letter stays reachable instead of being overwritten by the
+        // vanilla masks-only cycle).
+        (IS_RANDO || IS_MULTISHIP) ? Randomizer_GetPrevChildTradeItem()
                  : (INV_CONTENT(ITEM_TRADE_CHILD) <= ITEM_MASK_KEATON || INV_CONTENT(ITEM_TRADE_CHILD) > ITEM_MASK_TRUTH
                         ? ITEM_MASK_TRUTH
                         : INV_CONTENT(ITEM_TRADE_CHILD) - 1),
-        IS_RANDO ? Randomizer_GetNextChildTradeItem()
+        (IS_RANDO || IS_MULTISHIP) ? Randomizer_GetNextChildTradeItem()
                  : (INV_CONTENT(ITEM_TRADE_CHILD) >= ITEM_MASK_TRUTH || INV_CONTENT(ITEM_TRADE_CHILD) < ITEM_MASK_KEATON
                         ? ITEM_MASK_KEATON
                         : INV_CONTENT(ITEM_TRADE_CHILD) + 1),
@@ -386,11 +397,14 @@ void KaleidoScope_DrawItemCycles(PlayState* play) {
     // draw the mask select
     KaleidoScope_DrawItemCycleExtras(
         play, SLOT_TRADE_CHILD, CanMaskSelect(),
-        IS_RANDO ? Randomizer_GetPrevChildTradeItem()
+        // MultiShip uses the rando trade cycle too (cycles every owned child-trade item by its
+        // RAND_INF flag, so the Letter stays reachable instead of being overwritten by the
+        // vanilla masks-only cycle).
+        (IS_RANDO || IS_MULTISHIP) ? Randomizer_GetPrevChildTradeItem()
                  : (INV_CONTENT(ITEM_TRADE_CHILD) <= ITEM_MASK_KEATON || INV_CONTENT(ITEM_TRADE_CHILD) > ITEM_MASK_TRUTH
                         ? ITEM_MASK_TRUTH
                         : INV_CONTENT(ITEM_TRADE_CHILD) - 1),
-        IS_RANDO ? Randomizer_GetNextChildTradeItem()
+        (IS_RANDO || IS_MULTISHIP) ? Randomizer_GetNextChildTradeItem()
                  : (INV_CONTENT(ITEM_TRADE_CHILD) >= ITEM_MASK_TRUTH || INV_CONTENT(ITEM_TRADE_CHILD) < ITEM_MASK_KEATON
                         ? ITEM_MASK_KEATON
                         : INV_CONTENT(ITEM_TRADE_CHILD) + 1));

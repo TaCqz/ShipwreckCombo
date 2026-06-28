@@ -16,6 +16,7 @@ std::vector<std::string> gKnownPlayers;  // world names from the seed-info push 
 MultiShipSeed::Data gData;               // the full deserialized seed (gData.ready once present)
 std::string gStatus;                     // last 'Start Multiworld Save' request status line
 std::set<int> gCollected;                // F-040: RandomizerCheck ids already collected in our world
+bool gStartStateApplied = false;         // F-044: the once-only save-init starting-state grant ran
 
 // --- base64 (RFC 4648, standard alphabet, '=' padding). The server base64-encodes the
 // v3 blob because the transport is NUL-delimited and the raw bytes contain '\0'. ------
@@ -182,6 +183,9 @@ bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string
         // A freshly received seed is a brand-new world: start with no collected checks.
         // The load path (SetCollected from the save) overwrites this for an existing file.
         gCollected.clear();
+        // Likewise the starting-state grant hasn't run for a brand-new world (the load path
+        // restores the persisted flag for an existing file).
+        gStartStateApplied = false;
     }
     SPDLOG_INFO("[MultiShip] Deserialized v3 seed {} (worldId {}, {} players, {} placements, {} settings)",
                 sid, worldId, (int)numWorlds, (int)placementCount, (int)settingCount);
@@ -232,6 +236,16 @@ void SetCollected(const std::vector<int>& checks) {
 void ClearCollected() {
     std::lock_guard<std::mutex> lk(gMutex);
     gCollected.clear();
+}
+
+void SetStartStateApplied(bool applied) {
+    std::lock_guard<std::mutex> lk(gMutex);
+    gStartStateApplied = applied;
+}
+
+bool IsStartStateApplied() {
+    std::lock_guard<std::mutex> lk(gMutex);
+    return gStartStateApplied;
 }
 
 void SetStatus(const std::string& status) {

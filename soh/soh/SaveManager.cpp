@@ -464,6 +464,10 @@ void SaveManager::SaveMultiship(SaveContext* saveContext, int sectionID, bool fu
     SaveManager::Instance->SaveArray("collected", collected.size(), [&](size_t i) {
         SaveManager::Instance->SaveData("", collected[i]);
     });
+
+    // F-044: the once-only guard for the save-init starting-state grant (age + Master Sword,
+    // full wallets, Skip Child Zelda letter/flags, completed masks).
+    SaveManager::Instance->SaveData("startStateApplied", MultiShipSeed::IsStartStateApplied());
 }
 
 void SaveManager::LoadMultiship() {
@@ -514,6 +518,12 @@ void SaveManager::LoadMultiship() {
         SaveManager::Instance->LoadData("", collected[i]);
     });
     MultiShipSeed::SetCollected(collected);
+
+    // F-044: restore the start-state-applied guard (absent in older saves -> false, so the
+    // OnLoadGame fallback re-applies it once — idempotent flags, and grants are guarded too).
+    bool startStateApplied = false;
+    SaveManager::Instance->LoadData("startStateApplied", startStateApplied, false);
+    MultiShipSeed::SetStartStateApplied(startStateApplied);
 }
 #endif
 

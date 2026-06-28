@@ -363,6 +363,115 @@ extern "C" void Randomizer_MultiShipApplyTrials() {
         }
     }
 }
+
+// F-044: apply the one-time starting STATE for a MultiShip save from the synced settings. This is
+// the analog of the per-setting blocks in Randomizer_InitSaveFile — which does NOT run for a
+// QUEST_MULTISHIP file — for Tab 1 section 1.1 "Logic": the adult-start Master Sword, the
+// full-wallet rupees, the Skip Child Zelda letter + sequence-skip flags, and the completed mask
+// quest. Pooled checks that Skip Child Zelda auto-collects (Song From Impa) are NOT granted here:
+// in a multiworld they can hold a foreign item, so MultiShip.cpp routes them owner-aware through
+// the F-040 flow. The caller (MultiShip_ApplyStartState) copies the synced settings into the
+// Context first — so the Randomizer_GetSettingValue reads below see the right values at both file
+// creation and load — and guards this to run exactly once via the persisted start-state marker.
+// The flag writes are idempotent; the item grants (Master Sword, rupees, letter) are the part the
+// marker must gate so a reload never duplicates them. Standard rando + vanilla are untouched.
+extern "C" void Randomizer_MultiShipApplyStartState() {
+    int startingAge = Randomizer_GetSettingValue(RSK_SELECTED_STARTING_AGE);
+
+    // Starting age + Master Sword. Sram_InitSave built a child file; for an adult start switch to
+    // adult and spawn at the Temple of Time (mirrors Randomizer_InitSaveFile:487-492 + the adult
+    // equip in z_sram.c). For this batch Master Sword shuffle is off (it's a Tab 3 / F-046 setting,
+    // not shipped or copied here), so an adult start ALWAYS gets the Master Sword. When F-046 lands
+    // it adds the shuffle key to the honored/copied set and, when on, grants the generator's free
+    // item at RC_TOT_MASTER_SWORD instead — slot that branch into the `else` below.
+    if (startingAge == RO_AGE_ADULT) {
+        gSaveContext.savedSceneNum = -1;
+        gSaveContext.linkAge = LINK_AGE_ADULT;
+        gSaveContext.entranceIndex = ENTR_TEMPLE_OF_TIME_WARP_PAD;
+        gSaveContext.cutsceneIndex = 0;
+        if (!CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER)) {
+            gSaveContext.inventory.equipment |= OWNED_EQUIP_FLAG(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER);
+            gSaveContext.equips.buttonItems[0] = ITEM_SWORD_MASTER;
+            gSaveContext.equips.equipment &= ~(0xF << (EQUIP_TYPE_SWORD * 4));
+            gSaveContext.equips.equipment |= EQUIP_VALUE_SWORD_MASTER << (EQUIP_TYPE_SWORD * 4);
+        }
+    }
+
+    // Full Wallets: fill the wallet (GiveLinkRupees caps to the current wallet max).
+    if (Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
+        GiveLinkRupees(9001);
+    }
+
+    // Skip Child Zelda: start with Zelda's Lullaby + the Letter + the sequence-skip flags
+    // (Malon/Talon back at the ranch, letter obtained, lullaby learned, milk crates moved). Mirrors
+    // Randomizer_InitSaveFile:514-540 MINUS the Weird Egg (excluded — Malon no longer waits).
+    //
+    // Grant the lullaby DIRECTLY with Item_Give. Song shuffle is NOT honored (Tab 3), so the engine
+    // places nothing at Song-From-Impa — it is the vanilla, own-world lullaby. (Do NOT resolve it via
+    // Randomizer_GetItemFromKnownCheck: on an unplaced check that falls back to the (GetItemID) cast
+    // of RG_ZELDAS_LULLABY — a different enum — and hands out a garbage item, e.g. Bolero of Fire.)
+    // The lullaby is REQUIRED beyond being the "extra item": it sets QUEST_SONG_LULLABY, without
+    // which the vanilla !IS_RANDO fixup in Sram_OpenSave reverts the child-trade slot to a Chicken
+    // (that fixup is also now gated off for MultiShip). When song shuffle is honored, Song-From-Impa
+    // becomes a placed (possibly foreign) check and must be delivered owner-aware via F-040 instead.
+    if (Randomizer_GetSettingValue(RSK_SKIP_CHILD_ZELDA)) {
+        Item_Give(NULL, ITEM_SONG_LULLABY);
+
+        Flags_SetEventChkInf(EVENTCHKINF_OBTAINED_POCKET_EGG);
+        Flags_SetRandomizerInf(RAND_INF_WEIRD_EGG);
+        Flags_SetEventChkInf(EVENTCHKINF_TALON_WOKEN_IN_CASTLE);
+        Flags_SetEventChkInf(EVENTCHKINF_TALON_RETURNED_FROM_CASTLE);
+        Flags_SetEventChkInf(EVENTCHKINF_OBTAINED_ZELDAS_LETTER);
+        Flags_SetRandomizerInf(RAND_INF_ZELDAS_LETTER);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_LETTER_ZELDA);
+        Flags_SetEventChkInf(EVENTCHKINF_LEARNED_ZELDAS_LULLABY);
+        gSaveContext.sceneFlags[SCENE_HYRULE_CASTLE].swch |= (1 << 0x4); // move milk crates to the moat
+        INV_CONTENT(ITEM_LETTER_ZELDA) = ITEM_LETTER_ZELDA;             // always start with the letter
+    }
+
+    // Mask Quest = Completed: grant ALL masks up front (no shop borrowing). Sets the same
+    // completed-quest flags as Randomizer_InitSaveFile:573-590, then drops a mask into the
+    // child-trade slot so the inventory mask-cycle (gated by CanMaskSelect, which is now
+    // IS_MULTISHIP-aware in z_kaleido_item.c) lets the player rotate through all eight. The vanilla
+    // cycle path that MultiShip uses walks ITEM_MASK_KEATON..ITEM_MASK_TRUTH directly, so no further
+    // per-mask grant is needed.
+    if (Randomizer_GetSettingValue(RSK_MASK_QUEST) == RO_MASK_QUEST_COMPLETED) {
+        Flags_SetInfTable(INFTABLE_GATE_GUARD_PUT_ON_KEATON_MASK);
+        Flags_SetEventChkInf(EVENTCHKINF_PAID_BACK_BUNNY_HOOD_FEE);
+
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_KEATON);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_SKULL);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_SPOOKY);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_BUNNY);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_GORON);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_ZORA);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_GERUDO);
+        Flags_SetRandomizerInf(RAND_INF_CHILD_TRADES_HAS_MASK_TRUTH);
+
+        gSaveContext.itemGetInf[3] |= 0x100;  // Sold Keaton Mask
+        gSaveContext.itemGetInf[3] |= 0x200;  // Sold Skull Mask
+        gSaveContext.itemGetInf[3] |= 0x400;  // Sold Spooky Mask
+        gSaveContext.itemGetInf[3] |= 0x800;  // Bunny Hood
+        gSaveContext.itemGetInf[3] |= 0x8000; // Obtained Mask of Truth
+
+        // Put a mask in the child-trade slot so one is shown + the cycle has a starting point. Only
+        // if the slot is free — Skip Child Zelda may have placed the Letter there first (the player
+        // cycles letter -> masks as in vanilla).
+        if (INV_CONTENT(ITEM_TRADE_CHILD) == ITEM_NONE) {
+            INV_CONTENT(ITEM_TRADE_CHILD) = ITEM_MASK_KEATON;
+        }
+    }
+
+    // Skip Epona Race: mark Epona obtained so playing Epona's Song summons her without racing Ingo.
+    // EVENTCHKINF_EPONA_OBTAINED is the ownership flag En_Horse checks for the summon (winning the
+    // race normally sets it). RENTED_HORSE_FROM_INGO alone — what rando sets for every save — is
+    // only the rental step and does NOT enable the summon, which is why it appeared unfixed. Both
+    // are set; with Epona owned, Ingo's race horse is also removed at Lon Lon.
+    if (Randomizer_GetSettingValue(RSK_SKIP_EPONA_RACE)) {
+        Flags_SetEventChkInf(EVENTCHKINF_RENTED_HORSE_FROM_INGO);
+        Flags_SetEventChkInf(EVENTCHKINF_EPONA_OBTAINED);
+    }
+}
 #endif
 
 extern "C" void Randomizer_InitSaveFile() {

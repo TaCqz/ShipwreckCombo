@@ -94,6 +94,14 @@ std::vector<int> GetCollected();
 void SetCollected(const std::vector<int>& checks);
 void ClearCollected();
 
+// --- Start-state applied marker (F-044) --------------------------------------------
+// One-time guard so the save-init starting grants (adult age + Master Sword, full
+// wallets, Skip Child Zelda letter/flags, completed masks) are applied exactly once
+// across reloads — the same role RC_LINKS_POCKET plays for the F-041 reward, but for
+// the whole start-state block. Persisted in the SaveManager "multiship" section.
+void SetStartStateApplied(bool applied);
+bool IsStartStateApplied();
+
 // --- Request lifecycle status (for the 'Start Multiworld Save' menu) ---------------
 // A short human-readable line describing the last request outcome ("Requesting…",
 // "Seed received (world 1: Player 1)", "Denied: unknown_name", …). Thread-safe.
