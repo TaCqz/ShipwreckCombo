@@ -1392,6 +1392,19 @@ void TimeSaverOnFlagSetHandler(int16_t flagType, int16_t flag) {
 }
 
 void TimeSaverOnPlayerUpdateHandler() {
+#ifdef ENABLE_MULTISHIP
+    // MultiShip delivers every check's PLACED item through its own flow (the F-040 item flow + the
+    // dungeon-reward delivery). This vanilla queue exists to hand out the item a SKIPPED story
+    // cutscene would have given (dungeon rewards, songs, Light Arrows, ...) — but in a MultiShip game
+    // that item is always a duplicate of what our flow delivers, and for a shuffled reward it's the
+    // WRONG item (e.g. the vanilla Kokiri Emerald on top of the placed dungeon reward — the reported
+    // bug). The queue's hooks are registered !IS_RANDO, so a MultiShip file (also !IS_RANDO) was
+    // running them; drop the give here. IS_MULTISHIP-gated so plain vanilla is untouched.
+    if (IS_MULTISHIP) {
+        vanillaQueuedItemEntry = GET_ITEM_NONE;
+        return;
+    }
+#endif
     if (vanillaQueuedItemEntry.itemId == ITEM_NONE)
         return;
 

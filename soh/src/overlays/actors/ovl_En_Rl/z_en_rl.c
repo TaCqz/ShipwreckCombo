@@ -126,9 +126,21 @@ void func_80AE7590(EnRl* this, PlayState* play) {
         pos.x = player->actor.world.pos.x;
         pos.y = player->actor.world.pos.y + 80.0f;
         pos.z = player->actor.world.pos.z;
-        Actor_Spawn(&play->actorCtx, play, ACTOR_DEMO_EFFECT, pos.x, pos.y, pos.z, 0, 0, 0, 0xE);
-        if (GameInteractor_Should(VB_GIVE_ITEM_LIGHT_MEDALLION, true)) {
-            Item_Give(play, ITEM_MEDALLION_LIGHT);
+#ifdef ENABLE_MULTISHIP
+        // The Light Medallion is a shuffled "End of Dungeons" reward — it's the
+        // free Link's Pocket starting item (re-homed from Rauru's slot) or earned at another boss,
+        // and is NEVER handed out by Rauru here. Skip both the Item_Give AND the floating-medallion
+        // demo effect (which would otherwise spawn unconditionally and look like you're receiving
+        // it) so the Chamber of Sages no longer double-gives or visually fakes the Light Medallion.
+        // Robust by design: gated on IS_MULTISHIP itself, not the synced reward setting, so it holds
+        // even if that setting never reached the live Context. Vanilla + standard rando are unchanged.
+        if (!IS_MULTISHIP)
+#endif
+        {
+            Actor_Spawn(&play->actorCtx, play, ACTOR_DEMO_EFFECT, pos.x, pos.y, pos.z, 0, 0, 0, 0xE);
+            if (GameInteractor_Should(VB_GIVE_ITEM_LIGHT_MEDALLION, true)) {
+                Item_Give(play, ITEM_MEDALLION_LIGHT);
+            }
         }
         this->lightMedallionGiven = 1;
     }

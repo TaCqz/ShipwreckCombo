@@ -471,6 +471,41 @@ extern "C" void Randomizer_MultiShipApplyStartState() {
         Flags_SetEventChkInf(EVENTCHKINF_RENTED_HORSE_FROM_INGO);
         Flags_SetEventChkInf(EVENTCHKINF_EPONA_OBTAINED);
     }
+
+    // F-045 — Tab 2 dungeon items, "Start With" modes. Mirrors the Randomizer_InitSaveFile
+    // start-with blocks (which don't run for QUEST_MULTISHIP) for Maps & Compasses, Small Keys,
+    // Boss Keys and Ganon's Boss Key. Reads the dungeon-item settings copied into the Context by
+    // MultiShip_CopyHonoredSettingsToContext (the keys default to 0 == Start-With in an unpopulated
+    // Context, so the copy is REQUIRED — without it every save would wrongly grant). The other
+    // dungeon-item modes (Vanilla / Own / Any / Overworld / Anywhere) place the items in the world
+    // and are delivered via the F-040 flow + Randomizer_Item_Give, so they need no grant here.
+    // Gerudo Fortress keys and Key Rings have no Start-With mode, so they are intentionally absent.
+    if (Randomizer_GetSettingValue(RSK_SHUFFLE_MAPANDCOMPASS) == RO_DUNGEON_ITEM_LOC_STARTWITH) {
+        uint32_t startingDungeonItemsBitMask = (1 << 1) | (1 << 2);  // map | compass
+        for (int scene = SCENE_DEKU_TREE; scene <= SCENE_ICE_CAVERN; scene++) {
+            gSaveContext.inventory.dungeonItems[scene] |= startingDungeonItemsBitMask;
+        }
+    }
+    if (Randomizer_GetSettingValue(RSK_KEYSANITY) == RO_DUNGEON_ITEM_LOC_STARTWITH) {
+        gSaveContext.inventory.dungeonKeys[SCENE_FOREST_TEMPLE]            = FOREST_TEMPLE_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_FIRE_TEMPLE]              = FIRE_TEMPLE_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_WATER_TEMPLE]             = WATER_TEMPLE_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_SPIRIT_TEMPLE]            = SPIRIT_TEMPLE_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_SHADOW_TEMPLE]            = SHADOW_TEMPLE_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_BOTTOM_OF_THE_WELL]       = BOTTOM_OF_THE_WELL_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_GERUDO_TRAINING_GROUND]   = GERUDO_TRAINING_GROUND_SMALL_KEY_MAX;
+        gSaveContext.inventory.dungeonKeys[SCENE_INSIDE_GANONS_CASTLE]     = GANONS_CASTLE_SMALL_KEY_MAX;
+    }
+    if (Randomizer_GetSettingValue(RSK_BOSS_KEYSANITY) == RO_DUNGEON_ITEM_LOC_STARTWITH) {
+        gSaveContext.inventory.dungeonItems[SCENE_FOREST_TEMPLE] |= 1;  // Forest
+        gSaveContext.inventory.dungeonItems[SCENE_FIRE_TEMPLE]   |= 1;  // Fire
+        gSaveContext.inventory.dungeonItems[SCENE_WATER_TEMPLE]  |= 1;  // Water
+        gSaveContext.inventory.dungeonItems[SCENE_SPIRIT_TEMPLE] |= 1;  // Spirit
+        gSaveContext.inventory.dungeonItems[SCENE_SHADOW_TEMPLE] |= 1;  // Shadow
+    }
+    if (Randomizer_GetSettingValue(RSK_GANONS_BOSS_KEY) == RO_GANON_BOSS_KEY_STARTWITH) {
+        gSaveContext.inventory.dungeonItems[SCENE_GANONS_TOWER] |= 1;
+    }
 }
 #endif
 

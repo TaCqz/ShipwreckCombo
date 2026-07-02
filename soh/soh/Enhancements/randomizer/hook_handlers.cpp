@@ -12,6 +12,7 @@
 #include "soh/Notification/Notification.h"
 #include "soh/SaveManager.h"
 #include "soh/ShipInit.hpp"
+#include "soh/Network/MultiShip/MultiShipLog.h" // MULTISHIP_LOG (no-op without ENABLE_MULTISHIP)
 #include "soh/ObjectExtension/ObjectExtension.h"
 #include "item_category_adj.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
@@ -446,6 +447,49 @@ static bool MultiShipIsAreaAccessVB(GIVanillaBehavior id) {
         case VB_KING_ZORA_BE_MOVED:
         case VB_BE_ELIGIBLE_TO_OPEN_DOT:
         case VB_BE_ELIGIBLE_FOR_RAINBOW_BRIDGE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// F-045 (dungeon rewards): in MultiShip the nine spiritual stones + medallions are shuffled to the
+// dungeon-clear locations ("End of Dungeons" is the only curated dungeon-reward mode) and delivered
+// through the F-040 flag collection — the blue-warp / dungeons-done / time-travel collection flags
+// are set by the actors UNCONDITIONALLY (e.g. z_door_warp1.c sets EVENTCHKINF_USED_*_BLUE_WARP
+// before the give), independent of these VBs, so delivery always fires. The VANILLA reward gives
+// must therefore be SUPPRESSED so the player doesn't get both: the blue warp (the three stones), the
+// sage's Chamber-of-Sages cutscene (the five medallions, via Demo_Sa), and the blue-warp cutscene
+// gate. The rando handler already sets *should=false for these.
+//
+// Gated on IS_MULTISHIP ITSELF (via the caller), NOT on RAND_GET_OPTION(RSK_SHUFFLE_DUNGEON_REWARDS):
+// the synced reward setting reaching the live Context proved unreliable in the field (a delivered
+// reward shuffle still handed out vanilla rewards), and rewards are ALWAYS shuffled in MultiShip, so
+// this is both safe and robust. Pairs with the direct IS_MULTISHIP gate in z_en_rl.c for the Light
+// Medallion. Fixes the double / vanilla-reward bug end to end.
+static bool MultiShipIsRewardVB(GIVanillaBehavior id) {
+    switch (id) {
+        case VB_GIVE_ITEM_FROM_BLUE_WARP:
+        case VB_GIVE_ITEM_LIGHT_MEDALLION:
+        case VB_GIVE_ITEM_FOREST_MEDALLION:
+        case VB_GIVE_ITEM_FIRE_MEDALLION:
+        case VB_GIVE_ITEM_WATER_MEDALLION:
+        case VB_GIVE_ITEM_SPIRIT_MEDALLION:
+        case VB_GIVE_ITEM_SHADOW_MEDALLION:
+            // Diagnostic: if this line never appears in multiship.log when a boss's blue warp / the
+            // Chamber of Sages fires, the vanilla give is NOT being suppressed (stale binary, or the
+            // handler isn't reaching here) — the placed reward then never replaces the vanilla one.
+            MULTISHIP_LOG("suppressing vanilla reward give (VB id {})", (int)id);
+            return true;
+        // The Spirit/Shadow blue-warp cutscene (which sets RAND_INF_DUNGEONS_DONE_*, the collection
+        // flag for those two reward checks) gates on medallion POSSESSION by default — so if the
+        // player already holds that medallion (shuffled in from elsewhere) the cutscene, the flag,
+        // and thus the reward delivery would be skipped. The rando handler overrides it to gate on
+        // the dungeons-done flag instead (it touches only Spirit/Shadow; other scenes keep their
+        // default), so let it run. The other dungeons' blue-warp cutscenes already gate on their
+        // EventChkInf blue-warp flag, which is correct, so they need no override here. (No log here —
+        // VB_PLAY_BLUE_WARP_CS can fire every frame of the cutscene.)
+        case VB_PLAY_BLUE_WARP_CS:
             return true;
         default:
             return false;
@@ -1209,10 +1253,12 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
     va_copy(args, originalArgs);
 
 #ifdef ENABLE_MULTISHIP
-    // MultiShip reuses this handler for item flow (F-040) and the area-access settings (F-043)
-    // only: process just those behaviors and leave every other vanilla behavior at its default,
-    // so no other randomizer game-behavior change leaks into a MultiShip game.
-    if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id) && !MultiShipIsAreaAccessVB(id)) {
+    // MultiShip reuses this handler for item flow (F-040), the area-access settings (F-043) and the
+    // dungeon-reward suppression (F-045) only: process just those behaviors and leave every other
+    // vanilla behavior at its default, so no other randomizer game-behavior change leaks into a
+    // MultiShip game.
+    if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id) && !MultiShipIsAreaAccessVB(id) &&
+        !MultiShipIsRewardVB(id)) {
         va_end(args);
         return;
     }

@@ -664,6 +664,19 @@ void CheckTrackerItemReceive(GetItemEntry giEntry) {
         return;
     }
     auto scene = static_cast<SceneID>(gPlayState->sceneNum);
+#ifdef ENABLE_MULTISHIP
+    // MultiShip: every item (incl. dungeon rewards) is SHUFFLED, so the vanilla "received item ->
+    // its vanilla reward check" mapping below is wrong here — and it CASCADES. A MultiShip game is
+    // NOT IS_RANDO, so it would otherwise fall into that vanilla branch: delivering a placed reward
+    // (e.g. a Shadow Medallion at Queen Gohma) marks that medallion's VANILLA check (Bongo Bongo)
+    // collected, which the MultiShip own-reward delivery then grants too, chaining through every
+    // reward (Gohma->Shadow->Bongo Bongo->Light->...). MultiShip drives check collection from the
+    // real collection FLAGS (the OnRandoSetCheckStatus hook), so skip item-receive marking entirely.
+    // Runtime-gated on IS_MULTISHIP — a vanilla or standard-rando game is unaffected.
+    if (IS_MULTISHIP) {
+        return;
+    }
+#endif
     // Vanilla special item checks
     if (!IS_RANDO) {
         if (giEntry.itemId == ITEM_SHIELD_DEKU) {

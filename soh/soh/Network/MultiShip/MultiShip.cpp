@@ -30,10 +30,45 @@
 #include "soh/Enhancements/randomizer/static_data.h"     // Rando::StaticData
 #include "soh/SaveManager.h"                            // SaveSection, SECTION_ID_MULTISHIP
 #include <atomic>
+#include <cstdio>
+#include <filesystem>
+#include <spdlog/fmt/fmt.h>
 #include "MultiShipSeed.h"
 
 extern "C" {
 extern SaveContext gSaveContext;
+}
+
+// Dedicated MultiShip debug log. Appends one line to "multiship.log" in the app's "logs" folder
+// (the same directory as SoH's own <name>.log — see LUS Context.cpp) and mirrors it to the normal
+// SoH log under "[MultiShip]". SELF-GATED on IS_MULTISHIP so it produces nothing during a vanilla /
+// standard-rando game even in an ENABLE_MULTISHIP build — it can never touch other features. C++
+// callers should use the MULTISHIP_LOG(fmt, ...) macro in MultiShipLog.h; this is the backing fn.
+extern "C" void MultiShip_Log(const char* msg) {
+    if (gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
+        return; // only while actually playing a MultiShip save
+    }
+    if (msg == nullptr) {
+        msg = "";
+    }
+    SPDLOG_INFO("[MultiShip] {}", msg);
+    static std::mutex sLogMutex;
+    std::lock_guard<std::mutex> lock(sLogMutex);
+    // Resolve once: <app dir>/logs/multiship.log (matches where LUS writes its own log file).
+    static const std::string sLogPath = Ship::Context::GetPathRelativeToAppDirectory("logs/multiship.log");
+    static bool sAnnouncedPath = false;
+    if (!sAnnouncedPath) {
+        sAnnouncedPath = true;
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(sLogPath).parent_path(), ec);
+        SPDLOG_INFO("[MultiShip] debug log -> {}", sLogPath);
+    }
+    FILE* f = fopen(sLogPath.c_str(), "a");
+    if (f == nullptr) {
+        return;
+    }
+    fprintf(f, "%s\n", msg);
+    fclose(f);
 }
 
 // SoH's get-item textbox builder for randomizer items (defined in
@@ -187,6 +222,18 @@ static int MultiShip_CopyHonoredSettingsToContext() {
         // Context, and Starting Age ships collapsed alongside Selected.
         RSK_STARTING_AGE, RSK_SELECTED_STARTING_AGE, RSK_FULL_WALLETS, RSK_SKIP_CHILD_ZELDA,
         RSK_MASK_QUEST, RSK_SKIP_CHILD_STEALTH, RSK_SKIP_EPONA_RACE,
+        // F-045 — Tab 2 dungeon-item location modes. Needed so the "Start With" branch of
+        // Randomizer_MultiShipApplyStartState reads the shipped value: an unpopulated Context
+        // reads these as 0 (== RO_DUNGEON_ITEM_LOC_STARTWITH / RO_GANON_BOSS_KEY_VANILLA), so
+        // without the copy every save would wrongly grant all keys. The actual placement/delivery
+        // is item-driven (F-040 + Randomizer_Item_Give) and reads no setting, so Gerudo Fortress
+        // keys and Key Rings need not be copied.
+        RSK_KEYSANITY, RSK_BOSS_KEYSANITY, RSK_SHUFFLE_MAPANDCOMPASS, RSK_GANONS_BOSS_KEY,
+        // Shuffle Dungeon Rewards (End of Dungeons): read by MultiShipIsRewardVB (hook_handlers) to
+        // decide whether to suppress the vanilla boss/sage/Rauru reward gives — the placed reward is
+        // then delivered via the F-040 flag collection. Must be in the Context or the suppression
+        // (and thus the double-medallion fix) never engages.
+        RSK_SHUFFLE_DUNGEON_REWARDS,
     };
     int copied = 0;
     for (const auto& s : d.settings) {
@@ -302,6 +349,23 @@ static void MultiShip_ApplyPlacementsToContext() {
     // F-043: now that the Context exists, also apply the synced area-access settings + re-bake the
     // matching world-state flags so the game world matches the seed (open forest, fountain, etc.).
     MultiShip_ApplyAreaAccessWorldState();
+
+    // Diagnostic (F-045): dump the dungeon-item modes the live Context actually holds AFTER the
+    // settings copy, so multiship.log shows whether the synced reward/key settings reached the game
+    // — these are the values the reward suppression + delivery read. dungeonRewards: 0=Vanilla,
+    // 1=End of Dungeons. If this shows dungeonRewards=1 but rewards still come out vanilla, the
+    // suppression code isn't in the running binary; if it shows 0, the setting didn't propagate.
+    MultiShip_Log(fmt::format("Context loaded (world {}, {} placements): dungeonRewards={} smallKeys={} "
+                              "bossKeys={} mapCompass={} ganonBK={} gerudoKeys={} keyrings={}",
+                              d.worldId, placed,
+                              (int)ctx->GetOption(RSK_SHUFFLE_DUNGEON_REWARDS).Get(),
+                              (int)ctx->GetOption(RSK_KEYSANITY).Get(),
+                              (int)ctx->GetOption(RSK_BOSS_KEYSANITY).Get(),
+                              (int)ctx->GetOption(RSK_SHUFFLE_MAPANDCOMPASS).Get(),
+                              (int)ctx->GetOption(RSK_GANONS_BOSS_KEY).Get(),
+                              (int)ctx->GetOption(RSK_GERUDO_KEYS).Get(),
+                              (int)ctx->GetOption(RSK_KEYRINGS).Get())
+                      .c_str());
 }
 
 // F-041: grant this world's starting dungeon reward, placed by the generator at RC_LINKS_POCKET
@@ -699,6 +763,32 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
     }
 }
 
+// The eight dungeon-reward checks whose PLACED item MultiShip delivers itself (the boss blue-warp
+// stones + the Chamber-of-Sages medallions). Three vanilla give paths would otherwise duplicate our
+// placed-reward delivery and are all neutralized for a MultiShip game: (1) the boss/sage give itself,
+// suppressed via MultiShipIsRewardVB; (2) the native randomizer reward flow (z_demo_effect.c), which
+// is IS_RANDO-gated and so never runs for us; (3) the timesaver "Skip Story Cutscenes" queue, which
+// hands out the VANILLA reward on dungeon completion (timesaver_hook_handlers.cpp, gated !IS_RANDO so
+// it WAS running for us) — now disabled for MultiShip at its give handler. Our own placed reward is
+// delivered through the local delivery queue (the OnRandoSetCheckStatus hook below). Rauru's Light
+// Medallion (RC_GIFT_FROM_RAURU) is intentionally absent: the generator re-homes it to Link's Pocket,
+// granted once at save init (MultiShip_GrantStartingReward).
+static bool MultiShip_IsSuppressedRewardCheck(RandomizerCheck rc) {
+    switch (rc) {
+        case RC_QUEEN_GOHMA:
+        case RC_KING_DODONGO:
+        case RC_BARINADE:
+        case RC_PHANTOM_GANON:
+        case RC_VOLVAGIA:
+        case RC_MORPHA:
+        case RC_TWINROVA:
+        case RC_BONGO_BONGO:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void MultiShip::RegisterHooks() {
     // Registered ONCE at boot on the main thread (see the RegisterShipInitFunc
     // below). Each body is gated on `isConnected`, so the hooks only do anything
@@ -788,6 +878,31 @@ void MultiShip::RegisterHooks() {
                 SPDLOG_INFO("[MultiShip] Reporting collected foreign check {} (owner world {}, my world {})",
                             check, owner, MultiShip_GetMyWorld());
                 SendJsonToRemote(payload);
+            } else if (owner == MultiShip_GetMyWorld() && MultiShip_IsSuppressedRewardCheck(rc)) {
+                // OWN dungeon reward (F-045 delivery fix): the vanilla boss blue-warp / Chamber-of-
+                // Sages give is suppressed (MultiShipIsRewardVB) AND the native randomizer reward
+                // delivery is IS_RANDO-gated (z_demo_effect.c), which never runs in a MultiShip game —
+                // so NOTHING delivers our own dungeon rewards (own chests deliver via the actor's
+                // get-item replacement; reward checks have no such replacement, only the suppressed
+                // give). Deliver the placed reward through the SAME local queue the server-routed
+                // foreign items use, so it drains past the blue-warp cutscene with the normal
+                // get-item animation instead of being lost.
+                auto ctx = Rando::Context::GetInstance();
+                Rando::ItemLocation* il = ctx ? ctx->GetItemLocation(rc) : nullptr;
+                int rg = il ? static_cast<int>(il->GetPlacedRandomizerGet()) : static_cast<int>(RG_NONE);
+                if (rg > static_cast<int>(RG_NONE)) {
+                    PendingDelivery dlv;
+                    dlv.tracked = false;  // local collection, not part of the server seq stream
+                    dlv.rgId = rg;
+                    dlv.command = "give_item randomizer " + std::to_string(rg);
+                    {
+                        std::lock_guard<std::mutex> lk(gDeliveryMutex);
+                        gDeliveryQueue.push_back(std::move(dlv));
+                    }
+                    MultiShip_Log(fmt::format("own dungeon reward check {} collected -> queued placed item rg={}",
+                                              check, rg)
+                                      .c_str());
+                }
             }
             MultiShipSeed::MarkCollected(check);
             SaveManager::Instance->SaveSection(gSaveContext.fileNum, SECTION_ID_MULTISHIP, true);
