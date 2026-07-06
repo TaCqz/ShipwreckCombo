@@ -2327,6 +2327,13 @@ extern "C" ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerCheck(
     return OTRGlobals::Instance->gRandomizer->GetItemObtainabilityFromRandomizerCheck(randomizerCheck);
 }
 
+// C-callable obtainability by RandomizerGet (the by-check wrapper above resolves to this internally).
+// Used by the MultiShip delivery/collection paths to convert ammo the recipient can't hold (no bomb
+// bag / quiver / bullet bag) into a Blue Rupee at give time.
+extern "C" ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerGet(RandomizerGet randoGet) {
+    return OTRGlobals::Instance->gRandomizer->GetItemObtainabilityFromRandomizerGet(randoGet);
+}
+
 extern "C" bool Randomizer_IsCheckShuffled(RandomizerCheck rc) {
     return CheckTracker::IsCheckShuffled(rc);
 }

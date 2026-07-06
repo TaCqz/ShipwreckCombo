@@ -1083,6 +1083,15 @@ s32 Randomizer_ConsumeForeignItemGet(void);
 // token silent (no over-head, as vanilla) while still forcing the animation for every other
 // MultiShip item — and for a token going to the OTHER player (foreign flag set).
 s32 Randomizer_MultiShipIsTokenEntry(GetItemEntry giEntry);
+// Canonical rando Gold Skulltula token entry; z_player mirrors it into the player so an OWN token's
+// get-item textbox resolves the right name (the chest-offered vanilla entry would show a wrong item).
+GetItemEntry Randomizer_MultiShipGoldTokenEntry(void);
+// True when the check currently being delivered is a chest, so a token from a chest still animates
+// while a freestanding/skulltula token does not. Only valid for OWN items (foreign clears the check).
+s32 Randomizer_MultiShipCurrentCheckIsChest(void);
+// True while a tracked (server-routed) item is mid-delivery — a token RECEIVED from another player
+// animates, while an own shop token (untracked local delivery) stays silent. (Defined in MultiShip.cpp.)
+bool Randomizer_MultiShipDeliveringTracked(void);
 #endif
 u8 Item_CheckObtainability(u8 item);
 void Inventory_DeleteItem(u16 item, u16 invSlot);

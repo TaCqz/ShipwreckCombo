@@ -48,8 +48,8 @@ bool Base64Decode(const std::string& in, std::string& out) {
     return true;
 }
 
-// --- Little-endian byte reader over the decoded v3 blob. Reads match the server's
-// SerializeV3 (raw LE writes): every multi-byte field is LE; a str is a u8 length
+// --- Little-endian byte reader over the decoded seed blob. Reads match the server's
+// SerializeSeed (raw LE writes): every multi-byte field is LE; a str is a u8 length
 // prefix followed by that many bytes. Any over-read sets `ok=false` and stops. -------
 struct Reader {
     const unsigned char* p;
@@ -92,7 +92,10 @@ struct Reader {
     }
 };
 
-constexpr uint32_t kV3Version = 3;
+// The client understands v3 (no shop prices) and v4 (adds the shopsanity price table). The
+// server currently emits v4; older v3 blobs still load (with an empty price table).
+constexpr uint32_t kSeedVersionMin = 3;
+constexpr uint32_t kSeedVersionMax = 4;
 
 } // namespace
 
@@ -118,7 +121,7 @@ bool IsNameValid(const std::string& name) {
     return false;
 }
 
-bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string& err) {
+bool DeserializeSeedFromBase64(const std::string& base64, int worldId, std::string& err) {
     std::string bytes;
     if (!Base64Decode(base64, bytes)) {
         err = "base64 decode failed";
@@ -133,8 +136,8 @@ bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string
         return false;
     }
     uint32_t version = r.u32();
-    if (version != kV3Version) {
-        err = "unsupported version " + std::to_string(version) + " (expected 3)";
+    if (version < kSeedVersionMin || version > kSeedVersionMax) {
+        err = "unsupported version " + std::to_string(version) + " (expected 3 or 4)";
         return false;
     }
 
@@ -169,8 +172,21 @@ bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string
         d.settings.push_back(st);
     }
 
+    // shopPriceCount:u16 | per price: check:u16, price:u16   (v4+; empty on a v3 blob)
+    uint16_t shopPriceCount = 0;
+    if (version >= 4) {
+        shopPriceCount = r.u16();
+        d.shopPrices.reserve(shopPriceCount);
+        for (uint16_t p = 0; p < shopPriceCount && r.ok; ++p) {
+            ShopPrice sp;
+            sp.check = r.u16();
+            sp.price = r.u16();
+            d.shopPrices.push_back(sp);
+        }
+    }
+
     if (!r.ok) {
-        err = "truncated / malformed v3 payload";
+        err = "truncated / malformed seed payload";
         return false;
     }
 
@@ -187,8 +203,8 @@ bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string
         // restores the persisted flag for an existing file).
         gStartStateApplied = false;
     }
-    SPDLOG_INFO("[MultiShip] Deserialized v3 seed {} (worldId {}, {} players, {} placements, {} settings)",
-                sid, worldId, (int)numWorlds, (int)placementCount, (int)settingCount);
+    SPDLOG_INFO("[MultiShip] Deserialized v{} seed {} (worldId {}, {} players, {} placements, {} settings, {} shop prices)",
+                (int)version, sid, worldId, (int)numWorlds, (int)placementCount, (int)settingCount, (int)shopPriceCount);
     return true;
 }
 

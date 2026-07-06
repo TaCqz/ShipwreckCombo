@@ -134,6 +134,18 @@ extern "C" void Randomizer_MultiShipGiveStartingReward(int rgItem) {
     GetItemEntry entry = Rando::StaticData::RetrieveItem((RandomizerGet)rgItem).GetGIEntry_Copy();
     StartingItemGive(entry, RC_LINKS_POCKET);
 }
+
+// F-046: grant the item PLACED at `check` as a starting item, resolving it from the populated
+// Context exactly like the native save-init grants (GiveLinksPocketItem, the RC_TOT_MASTER_SWORD
+// block in Randomizer_InitSaveFile). Used by MultiShip's owner-aware start auto-collect for our OWN
+// adult-start Master Sword pedestal + skipped Song From Impa items — checks with no in-world trigger
+// left to deliver them. The caller only invokes this for a check placed in our world, so
+// Randomizer_GetItemFromKnownCheck resolves the real placed item (never the unplaced-check fallback).
+// play == NULL safe (StartingItemGive routes through Item_Give), like the other start grants.
+extern "C" void Randomizer_MultiShipGiveStartCheckItem(int check) {
+    GetItemEntry entry = Randomizer_GetItemFromKnownCheck((RandomizerCheck)check, (GetItemID)RG_NONE);
+    StartingItemGive(entry, (RandomizerCheck)check);
+}
 #endif
 
 void SetStartingItems() {
@@ -389,7 +401,13 @@ extern "C" void Randomizer_MultiShipApplyStartState() {
         gSaveContext.linkAge = LINK_AGE_ADULT;
         gSaveContext.entranceIndex = ENTR_TEMPLE_OF_TIME_WARP_PAD;
         gSaveContext.cutsceneIndex = 0;
-        if (!CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER)) {
+        // F-046: with Master Sword shuffle ON the pedestal is a real check, so an adult start does NOT
+        // get the Master Sword for free — the generator placed some item at RC_TOT_MASTER_SWORD (own
+        // or foreign), and MultiShip_ApplyStartState's owner-aware auto-collect grants/routes it (the
+        // analog of Randomizer_InitSaveFile, which likewise skips the equip and grants the pedestal
+        // item when the sword is shuffled). Only auto-equip the Master Sword when it is NOT shuffled.
+        if (!Randomizer_GetSettingValue(RSK_SHUFFLE_MASTER_SWORD) &&
+            !CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER)) {
             gSaveContext.inventory.equipment |= OWNED_EQUIP_FLAG(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER);
             gSaveContext.equips.buttonItems[0] = ITEM_SWORD_MASTER;
             gSaveContext.equips.equipment &= ~(0xF << (EQUIP_TYPE_SWORD * 4));
@@ -415,7 +433,15 @@ extern "C" void Randomizer_MultiShipApplyStartState() {
     // (that fixup is also now gated off for MultiShip). When song shuffle is honored, Song-From-Impa
     // becomes a placed (possibly foreign) check and must be delivered owner-aware via F-040 instead.
     if (Randomizer_GetSettingValue(RSK_SKIP_CHILD_ZELDA)) {
-        Item_Give(NULL, ITEM_SONG_LULLABY);
+        // F-046: only grant the vanilla lullaby directly when songs are NOT shuffled. With song
+        // shuffle on, Song From Impa holds a placed (possibly foreign) item, delivered/routed by
+        // MultiShip_ApplyStartState's owner-aware start auto-collect of RC_SONG_FROM_IMPA — granting
+        // the lullaby here too would be the wrong item and would leave the placed one uncollected.
+        // (The EVENTCHKINF_LEARNED_ZELDAS_LULLABY sequence flag is still set below; it fires no
+        // collection here because the F-040 flag handler isn't registered until OnLoadGame.)
+        if (Randomizer_GetSettingValue(RSK_SHUFFLE_SONGS) == RO_SONG_SHUFFLE_OFF) {
+            Item_Give(NULL, ITEM_SONG_LULLABY);
+        }
 
         Flags_SetEventChkInf(EVENTCHKINF_OBTAINED_POCKET_EGG);
         Flags_SetRandomizerInf(RAND_INF_WEIRD_EGG);

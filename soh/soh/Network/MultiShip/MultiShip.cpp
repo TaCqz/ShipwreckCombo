@@ -102,6 +102,19 @@ struct PendingDelivery {
 static std::mutex gDeliveryMutex;
 static std::deque<PendingDelivery> gDeliveryQueue;
 
+// True while a TRACKED (server-routed) delivery is the one currently being given — read by the
+// z_player token-animation carve-out so a token RECEIVED from another player via the server shows the
+// over-head get-item animation, while an OWN shop token (an untracked local delivery through the same
+// queue) stays silent. Set before each drain dispatch; cleared when the item is received (or the queue
+// idles). Main-thread only (drain + get-item both run on the main thread).
+static bool gMultiShipDeliveringTracked = false;
+
+// C-callable (z_player token-animation carve-out): is the item currently mid-delivery a tracked
+// server-routed one? false for own shop/reward gives and for locally-collected (RC-queue) items.
+extern "C" bool Randomizer_MultiShipDeliveringTracked(void) {
+    return gMultiShipDeliveringTracked;
+}
+
 // True when Link is in-game and able to START a get-item (defined in hook_handlers.cpp,
 // which has player access). Does NOT check getItemId, so the drain can re-attempt a give
 // that staged but stranded; an in-progress get-item is still excluded.
@@ -112,6 +125,10 @@ extern "C" bool Randomizer_PlayerCanReceiveItem(void);
 extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId);
 // Diagnostic: logs why the player currently can't receive an item (stall debugging).
 extern "C" void Randomizer_LogReceiveBlockReason(void);
+// Obtainability of a RandomizerGet against the CURRENT inventory (defined in OTRGlobals.cpp). Used to
+// convert ammo the recipient can't hold (no bomb bag / quiver / ...) into a Blue Rupee at delivery
+// time. Forward-declared to avoid pulling the heavy OTRGlobals.h into this translation unit.
+extern "C" ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerGet(RandomizerGet randoGet);
 // Translates a received rando item that is a vanilla equipment upgrade for us (strength →
 // UPG_STRENGTH) into that vanilla upgrade, so it shows in the equipment subscreen + takes effect.
 // Defined in hook_handlers.cpp (which has the game-side macros/functions). No-op for other items.
@@ -131,6 +148,10 @@ extern "C" void Randomizer_MultiShipApplyTrials();
 // Sword, full wallets, Skip Child Zelda letter + lullaby + flags, completed masks. Defined in
 // savefile.cpp; the caller copies the synced settings to the Context first + owns the once guard.
 extern "C" void Randomizer_MultiShipApplyStartState();
+// F-046: grants the item PLACED at `check` as a starting item (StartingItemGive, play==NULL safe).
+// Defined in savefile.cpp. Used by the owner-aware start auto-collect for our OWN adult-start Master
+// Sword pedestal (RC_TOT_MASTER_SWORD) + skipped Song From Impa (RC_SONG_FROM_IMPA) items.
+extern "C" void Randomizer_MultiShipGiveStartCheckItem(int check);
 // Applies the Skip Child Stealth entrance remap (F-044) from the live Context. Defined in
 // randomizer_entrance.c (MultiShip never runs Entrance_Init, so it isn't patched there). Idempotent;
 // reads RSK_SKIP_CHILD_STEALTH, so we call it after copying the synced settings to the Context.
@@ -234,6 +255,26 @@ static int MultiShip_CopyHonoredSettingsToContext() {
         // then delivered via the F-040 flag collection. Must be in the Context or the suppression
         // (and thus the double-medallion fix) never engages.
         RSK_SHUFFLE_DUNGEON_REWARDS,
+        // F-046 Pass 1 — Tab 3 "Shuffle Items". These drive setting-gated vanilla-give suppression
+        // so the placed item delivers once (never doubled with the vanilla give): songs via the
+        // TimeSavers VB_GIVE_ITEM_SONG hook, and ocarina / weird egg / Gerudo card / frog rupees /
+        // adult trade via MultiShipIsShuffleItemVB (hook_handlers). Master Sword is read by the
+        // adult-start branch of Randomizer_MultiShipApplyStartState (grant the placed pedestal item
+        // instead of the sword). Bombchu Drops is read by the drop-table gate. (Kokiri Sword rides
+        // VB_GIVE_ITEM_FROM_CHEST + IsLocationShuffled, which is item-driven and needs no setting.)
+        RSK_SHUFFLE_SONGS, RSK_SHUFFLE_OCARINA, RSK_SHUFFLE_WEIRD_EGG,
+        RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD, RSK_SHUFFLE_FROG_SONG_RUPEES, RSK_SHUFFLE_ADULT_TRADE,
+        RSK_SHUFFLE_MASTER_SWORD, RSK_ENABLE_BOMBCHU_DROPS,
+        // F-046 Pass 2 — Token Shuffle. Read by MultiShipIsShuffleItemVB (to suppress the vanilla
+        // token give when on) and by the FLAG_GS_TOKEN branch of RandomizerOnFlagSetHandler (which
+        // only queues the placed item — instead of marking the GS collected as vanilla — when this
+        // is not Off). Delivery + the F-041 token animation then ride the existing F-040 flow.
+        RSK_SHUFFLE_TOKENS,
+        // F-046 Pass 3 — Shop Shuffle. Read by the shop actors' SHOP_RANDO gate (En_Ossan / EnGirlA,
+        // which set up + draw + sell shopsanity slots like rando when this is on) and by the
+        // BuildShopMessage OnOpenText hook (which builds the shop item name + owner label). Delivery
+        // on purchase rides the F-040 flag flow. Without this in the Context, shops stay vanilla.
+        RSK_SHOPSANITY,
     };
     int copied = 0;
     for (const auto& s : d.settings) {
@@ -294,6 +335,22 @@ static void MultiShip_ApplyPlacementsToContext() {
         ++placed;
     }
 
+    // F-046 Pass 3: apply the shipped shopsanity prices so each shuffled shop slot shows + charges
+    // the exact cost the affordability logic generated under (without this the placed item's own
+    // price — 0 for a non-shop item — leaks through, the bug that made shuffled slots free). Prices
+    // are per-check; SetCustomPrice sets a sticky price that survives the SetPlacedItem above (its
+    // SetPrice is a no-op once hasCustomPrice). Non-selected slots ship no price and keep their
+    // vanilla shop-item cost. Empty when shopsanity is off.
+    int priced = 0;
+    for (const auto& sp : d.shopPrices) {
+        Rando::ItemLocation* loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(sp.check));
+        if (loc == nullptr) {
+            continue;
+        }
+        loc->SetCustomPrice(static_cast<uint16_t>(sp.price));
+        ++priced;
+    }
+
     // Ice-trap disguise (F-040), mirroring the randomizer's Context::CreateItemOverrides: each
     // ice trap appears as a random other item with a troll name. Base rando builds the disguise
     // model pool (possibleIceTrapModels) during generation, which never runs in MultiShip — so we
@@ -343,8 +400,8 @@ static void MultiShip_ApplyPlacementsToContext() {
             loc->SetCheckStatus(RCSHOW_COLLECTED);
         }
     }
-    SPDLOG_INFO("[MultiShip] Applied {} world-{} placements to Context ({} already collected)", placed,
-                d.worldId, static_cast<int>(collected.size()));
+    SPDLOG_INFO("[MultiShip] Applied {} world-{} placements to Context ({} already collected, {} shop prices)", placed,
+                d.worldId, static_cast<int>(collected.size()), priced);
 
     // F-043: now that the Context exists, also apply the synced area-access settings + re-bake the
     // matching world-state flags so the game world matches the seed (open forest, fountain, etc.).
@@ -416,6 +473,43 @@ extern "C" void MultiShip_GrantStartingReward(int persist) {
                 d.worldId);
 }
 
+// F-046: owner-aware auto-collect of a start check that has no in-world trigger left to fire it — an
+// adult start's already-pulled Master Sword pedestal (RC_TOT_MASTER_SWORD, when Master Sword is
+// shuffled) and Skip-Child-Zelda's skipped Song From Impa (RC_SONG_FROM_IMPA, when songs are
+// shuffled). The generator placed an item there whose reachability the seed ASSUMES is obtained at
+// start, so it must be collected or the item could strand. Mirrors the F-040 collect flow: grant the
+// placed item locally through the start-item pipeline if it's ours, else report the collection so the
+// server routes it to its owner. Runs at save init (play may be NULL), so an OWN item uses
+// StartingItemGive rather than the in-gameplay delivery queue. Once-only via the collected set; a
+// no-op if the check isn't placed in our seed (the shuffle that would place it is off). Foreign +
+// offline: the report is lost but the check is still marked collected, matching the documented F-040
+// disconnected-collection caveat (online play assumed).
+static void MultiShip_AutoCollectStartCheck(int check) {
+    const int owner = MultiShip_GetCheckOwner(check);
+    if (owner < 0 || MultiShipSeed::IsCollected(check)) {
+        return;  // not placed in our seed, or already handled
+    }
+    if (owner == MultiShip_GetMyWorld()) {
+        Randomizer_MultiShipGiveStartCheckItem(check);
+        MultiShip_Log(fmt::format("start auto-collect: granted own placed item at check {}", check).c_str());
+    } else if (MultiShip::Instance != nullptr && MultiShip::Instance->isConnected) {
+        nlohmann::json payload;
+        payload["id"] = ShipUtils::Random(0, UINT32_MAX);
+        payload["type"] = "hook";
+        payload["hook"]["type"] = "OnCheckCollected";
+        payload["hook"]["check"] = check;
+        payload["hook"]["world"] = MultiShip_GetMyWorld();
+        MultiShip::Instance->SendJsonToRemote(payload);
+        MultiShip_Log(
+            fmt::format("start auto-collect: reported foreign check {} to owner world {}", check, owner).c_str());
+    } else {
+        MultiShip_Log(
+            fmt::format("start auto-collect: foreign check {} but offline; report lost (owner world {})", check, owner)
+                .c_str());
+    }
+    MultiShipSeed::MarkCollected(check);
+}
+
 // F-044: apply the one-time starting STATE (adult age + Master Sword, full wallets, Skip Child Zelda
 // letter/flags, completed masks) from the synced "Logic" settings — the MultiShip analog of the
 // per-setting blocks in Randomizer_InitSaveFile, which does not run for a QUEST_MULTISHIP file.
@@ -442,6 +536,49 @@ extern "C" void MultiShip_ApplyStartState(int persist) {
     // file creation nothing else has populated it yet (placements/settings land at OnLoadGame).
     MultiShip_CopyHonoredSettingsToContext();
     Randomizer_MultiShipApplyStartState();
+    // F-046: owner-aware auto-collect of the start checks that Randomizer_MultiShipApplyStartState
+    // deliberately leaves for us (settings just copied into the Context). Adult start + Master Sword
+    // shuffle -> the already-pulled ToT pedestal (RC_TOT_MASTER_SWORD); Skip Child Zelda + song
+    // shuffle -> the skipped Song From Impa (RC_SONG_FROM_IMPA). Each grants our own placed item or
+    // routes a foreign one; no-op when the check isn't placed for these settings.
+    auto ctx = Rando::Context::GetInstance();
+    // The auto-collects below resolve each check's placed item from the Context. At file CREATION the
+    // Context is otherwise empty (placements are applied at OnLoadGame), so an OWN start check would
+    // resolve to nothing and still be marked collected — losing its item. Populate our world's
+    // placements first (idempotent SetPlacedItem; OnLoadGame's ApplyPlacementsToContext already did
+    // this there). Foreign checks only need the RC to report, but this keeps own + foreign uniform.
+    {
+        for (const auto& pl : d.placements) {
+            if (pl.locWorld != d.worldId) {
+                continue;
+            }
+            Rando::ItemLocation* loc = ctx->GetItemLocation(static_cast<RandomizerCheck>(pl.loc));
+            if (loc != nullptr) {
+                loc->SetPlacedItem(static_cast<RandomizerGet>(pl.item));
+            }
+        }
+    }
+    if (ctx->GetOption(RSK_SHUFFLE_MASTER_SWORD).Get() != RO_GENERIC_OFF &&
+        ctx->GetOption(RSK_SELECTED_STARTING_AGE).Get() == RO_AGE_ADULT) {
+        MultiShip_AutoCollectStartCheck(static_cast<int>(RC_TOT_MASTER_SWORD));
+    }
+    if (ctx->GetOption(RSK_SKIP_CHILD_ZELDA).Get() != RO_GENERIC_OFF &&
+        ctx->GetOption(RSK_SHUFFLE_SONGS).Get() != RO_SONG_SHUFFLE_OFF) {
+        MultiShip_AutoCollectStartCheck(static_cast<int>(RC_SONG_FROM_IMPA));
+    }
+    // Skip Child Zelda also skips receiving Zelda's Letter from Zelda and meeting Malon at the castle,
+    // so those checks — like Song From Impa — are made root-reachable by the engine and must be
+    // auto-collected at start: own item granted, foreign routed to its owner. Without this they dangle
+    // uncollected (their placed item — e.g. the other world's token — is never delivered/routed, and a
+    // stale in-game flag path could later collect them at an uncontrolled time). Zelda's Letter the
+    // ITEM is granted separately by Randomizer_MultiShipApplyStartState (and excluded from the engine
+    // pool), so these checks hold their SHUFFLED placements, not the vanilla letter/egg. Gated on Skip
+    // Child Zelda only — neither is a song location, so (unlike Song From Impa) song shuffle is
+    // irrelevant. Idempotent via the collected-set, so the once-guarded start state never doubles.
+    if (ctx->GetOption(RSK_SKIP_CHILD_ZELDA).Get() != RO_GENERIC_OFF) {
+        MultiShip_AutoCollectStartCheck(static_cast<int>(RC_HC_ZELDAS_LETTER));
+        MultiShip_AutoCollectStartCheck(static_cast<int>(RC_HC_MALON_EGG));
+    }
     MultiShipSeed::SetStartStateApplied(true);
     if (persist) {
         // Full base save: the grants live in the base inventory/equip/scene-flag sections while the
@@ -634,7 +771,7 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             int worldId = payload.value("worldId", -1);
             std::string data = payload.value("data", std::string());
             std::string err;
-            if (!data.empty() && MultiShipSeed::DeserializeV3FromBase64(data, worldId, err)) {
+            if (!data.empty() && MultiShipSeed::DeserializeSeedFromBase64(data, worldId, err)) {
                 std::string who = payload.value("playerName", std::string());
                 MultiShipSeed::SetStatus("Seed received (world " + std::to_string(worldId + 1) +
                                          (who.empty() ? "" : ": " + who) + ")");
@@ -789,6 +926,15 @@ static bool MultiShip_IsSuppressedRewardCheck(RandomizerCheck rc) {
     }
 }
 
+// F-046 Pass 3: is this check a shopsanity shop slot? An OWN shop purchase is delivered through the
+// local delivery queue (like the suppressed rewards above), because the shop-menu talk state stalls
+// the normal staged get-item — so RandomizerOnFlagSetHandler marks a bought shop check collected and
+// this hook enqueues the placed item, which drains + animates once the shop menu closes.
+static bool MultiShip_IsShopCheck(RandomizerCheck rc) {
+    auto loc = Rando::StaticData::GetLocation(rc);
+    return loc != nullptr && loc->IsShop();
+}
+
 void MultiShip::RegisterHooks() {
     // Registered ONCE at boot on the main thread (see the RegisterShipInitFunc
     // below). Each body is gated on `isConnected`, so the hooks only do anything
@@ -878,15 +1024,14 @@ void MultiShip::RegisterHooks() {
                 SPDLOG_INFO("[MultiShip] Reporting collected foreign check {} (owner world {}, my world {})",
                             check, owner, MultiShip_GetMyWorld());
                 SendJsonToRemote(payload);
-            } else if (owner == MultiShip_GetMyWorld() && MultiShip_IsSuppressedRewardCheck(rc)) {
-                // OWN dungeon reward (F-045 delivery fix): the vanilla boss blue-warp / Chamber-of-
-                // Sages give is suppressed (MultiShipIsRewardVB) AND the native randomizer reward
-                // delivery is IS_RANDO-gated (z_demo_effect.c), which never runs in a MultiShip game —
-                // so NOTHING delivers our own dungeon rewards (own chests deliver via the actor's
-                // get-item replacement; reward checks have no such replacement, only the suppressed
-                // give). Deliver the placed reward through the SAME local queue the server-routed
-                // foreign items use, so it drains past the blue-warp cutscene with the normal
-                // get-item animation instead of being lost.
+            } else if (owner == MultiShip_GetMyWorld() &&
+                       (MultiShip_IsSuppressedRewardCheck(rc) || MultiShip_IsShopCheck(rc))) {
+                // OWN dungeon reward (F-045) or OWN shop purchase (F-046 Pass 3): neither delivers via
+                // the normal path — the native reward give is IS_RANDO-gated (z_demo_effect.c) and never
+                // runs, and a shop purchase can't use the staged get-item (the shop-menu talk state
+                // stalls it, see RandomizerOnFlagSetHandler). Deliver the placed item through the SAME
+                // local queue the server-routed foreign items use, so it drains + animates once the
+                // blue-warp cutscene / shop menu closes instead of being lost.
                 auto ctx = Rando::Context::GetInstance();
                 Rando::ItemLocation* il = ctx ? ctx->GetItemLocation(rc) : nullptr;
                 int rg = il ? static_cast<int>(il->GetPlacedRandomizerGet()) : static_cast<int>(RG_NONE);
@@ -894,12 +1039,20 @@ void MultiShip::RegisterHooks() {
                     PendingDelivery dlv;
                     dlv.tracked = false;  // local collection, not part of the server seq stream
                     dlv.rgId = rg;
-                    dlv.command = "give_item randomizer " + std::to_string(rg);
+                    if (rg == static_cast<int>(RG_ICE_TRAP)) {
+                        // Deliver an ice trap by CHECK so the give resolves GetFinalGIEntry(check),
+                        // applying THIS check's disguise (LooksLike model + trick name from the Context
+                        // override) to the over-head get-item — matching the shelf/bait. Delivering by
+                        // rgId resolves the raw RG_ICE_TRAP, whose placeholder model shows as a huge rupee.
+                        dlv.command = "give_item randomizer_check " + std::to_string(check);
+                    } else {
+                        dlv.command = "give_item randomizer " + std::to_string(rg);
+                    }
                     {
                         std::lock_guard<std::mutex> lk(gDeliveryMutex);
                         gDeliveryQueue.push_back(std::move(dlv));
                     }
-                    MultiShip_Log(fmt::format("own dungeon reward check {} collected -> queued placed item rg={}",
+                    MultiShip_Log(fmt::format("own reward/shop check {} collected -> queued placed item rg={}",
                                               check, rg)
                                       .c_str());
                 }
@@ -948,6 +1101,16 @@ void MultiShip::RegisterHooks() {
                 // Resolve the item this give will grant ONCE, now, against the pre-give
                 // inventory — so a progressive item matches the exact tier on receipt.
                 if (front.expectModIndex < 0 && front.rgId >= 0) {
+                    // Ammo the recipient can't hold (no bomb bag / quiver / bullet bag / bombchu) is
+                    // delivered as a Blue Rupee instead. Checked here on the RECEIVING client's current
+                    // inventory (the server can't know it), once, before the give is resolved so the
+                    // receipt-confirmation matches the converted item. Covers both server-routed items
+                    // and own shop/reward gives that funnel through this queue.
+                    if (Randomizer_GetItemObtainabilityFromRandomizerGet((RandomizerGet)front.rgId) ==
+                        CANT_OBTAIN_NEED_UPGRADE) {
+                        front.rgId = (int)RG_BLUE_RUPEE;
+                        front.command = "give_item randomizer " + std::to_string((int)RG_BLUE_RUPEE);
+                    }
                     Randomizer_ResolveGive(front.rgId, &front.expectModIndex, &front.expectGetItemId);
                 }
                 d = front;
@@ -978,6 +1141,10 @@ void MultiShip::RegisterHooks() {
                             d.command);
             }
         }
+        // Mark whether the item now being given is a tracked (server-routed) delivery, so the
+        // get-item animation carve-out (z_player) animates a server-received token but keeps an own
+        // shop token silent. Persists across the re-issue frames; cleared on receipt (OnItemReceive).
+        gMultiShipDeliveringTracked = d.tracked;
         std::reinterpret_pointer_cast<Ship::ConsoleWindow>(
             Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetGuiWindow("Console"))
             ->Dispatch(d.command);
@@ -1021,6 +1188,9 @@ void MultiShip::RegisterHooks() {
         }
         SPDLOG_INFO("[MultiShip] Confirmed received (rg={}, tracked={}, seq={})", d.rgId, d.tracked, d.seq);
         gDeliveryQueue.pop_front();
+        // Delivery done: clear the tracked-delivery marker so a subsequent locally-collected token
+        // (freestanding) isn't mistaken for a server delivery by the animation carve-out.
+        gMultiShipDeliveringTracked = false;
     });
 
     // Get-item textbox for delivered randomizer items. Items the rando table stores as

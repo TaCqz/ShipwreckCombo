@@ -118,6 +118,7 @@ GetItemEntry Randomizer_GetItemFromKnownCheckWithoutObtainabilityCheck(Randomize
 bool Randomizer_IsCheckShuffled(RandomizerCheck check);
 GetItemEntry GetItemMystery();
 ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerCheck(RandomizerCheck randomizerCheck);
+ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerGet(RandomizerGet randoGet);
 uint8_t Randomizer_IsSeedGenerated();
 uint8_t Randomizer_IsSpoilerLoaded();
 void Randomizer_SetSpoilerLoaded(bool spoilerLoaded);

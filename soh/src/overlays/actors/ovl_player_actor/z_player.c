@@ -7344,16 +7344,20 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                                                 Item_CheckObtainability(giEntry.itemId) != ITEM_NONE && isDropToSkip;
 
 #ifdef ENABLE_MULTISHIP
-                // MultiShip (F-041): show the get-item over-head animation for EVERY collected or
-                // delivered item — including junk (rupees, ammo, ...) that vanilla would silently
-                // add — so the player always sees what they got and who it's for. The ONE exception
-                // is an OWN Gold Skulltula token (skulltula kill-drop or overworld freestanding
-                // pickup): it stays vanilla and does NOT interrupt gameplay. A token bound for the
-                // OTHER player is a foreign item (foreign flag set) and DOES animate — it's being
-                // sent away, so the moment should show. Overrides the rando/FastDrops skip-animation
-                // heuristics above; IS_MULTISHIP-gated so vanilla + standard rando are untouched.
+                // MultiShip: show the get-item over-head animation for EVERY collected or delivered
+                // item — including junk (rupees, ammo, ...) that vanilla would silently add — so the
+                // player always sees what they got and who it's for. Gold Skulltula TOKENS are the
+                // exception, animating ONLY when they warrant the moment:
+                //   - collected from a CHEST                        -> animate (like any chest item)
+                //   - RECEIVED from the other player via the server -> animate ("delivering tracked")
+                //   - collected freestanding / bought in a shop     -> NO animation (quiet, no freeze)
+                // A token bound for the OTHER player is a foreign item (foreign flag set) that also
+                // animates — it's being sent away + its cross-world routing rides the get-item
+                // cutscene, so the moment must show. Overrides the rando/FastDrops skip heuristics;
+                // IS_MULTISHIP-gated so vanilla + rando are untouched.
                 if (IS_MULTISHIP) {
-                    if (Randomizer_GetForeignItemOwner() < 0 && Randomizer_MultiShipIsTokenEntry(giEntry)) {
+                    if (Randomizer_GetForeignItemOwner() < 0 && Randomizer_MultiShipIsTokenEntry(giEntry) &&
+                        !Randomizer_MultiShipCurrentCheckIsChest() && !Randomizer_MultiShipDeliveringTracked()) {
                         showItemCutscene = false;
                     } else {
                         showItemCutscene = true;
@@ -7381,7 +7385,13 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                     return 1;
                 }
 
-                // Don't show cutscene when picking up an item.
+                // Don't show cutscene when picking up an item. MultiShip freestanding/shop tokens land
+                // here (no over-head animation, no freeze). We deliberately show NO textbox: the vanilla
+                // token message carries CTRL_UNSKIPPABLE (the count widget) and would freeze the player
+                // on a box that can't be dismissed, and the skippable custom message can't be built on
+                // this path (its builder reads the get-item entry, cleared just below). The HUD token
+                // count still updates. (Chest / server-received tokens DO animate + show the skippable
+                // custom "You got a Gold Skulltula Token!" box via the get-item cutscene path above.)
                 func_8083E4C4(play, this, &giEntry);
                 this->getItemId = GI_NONE;
                 this->getItemEntry = (GetItemEntry)GET_ITEM_NONE;
@@ -14148,8 +14158,21 @@ s32 func_8084DFF4(PlayState* play, Player* this) {
         // so vanilla-table (MOD_NONE) foreign items also show "You found <Player>'s <item>!". They
         // otherwise use their own vanilla text id, which the reword (hooked to that custom id) can't
         // catch. Read-only here (the foreign flag is consumed below); a no-op for own/rando items.
-        if (Randomizer_GetForeignItemOwner() >= 0) {
+        // ALSO reroute an OWN Gold Skulltula token here: its vanilla message carries CTRL_UNSKIPPABLE
+        // (the count widget) which freezes the player on an unskippable box — so a token collected
+        // from a chest or received from the other player would otherwise be a frozen box. The custom
+        // "You got a Gold Skulltula Token!" message is a normal, skippable one like every other item.
+        if (Randomizer_GetForeignItemOwner() >= 0 || (IS_MULTISHIP && Randomizer_MultiShipIsTokenEntry(giEntry))) {
             giEntry.textId = TEXT_RANDOMIZER_CUSTOM_ITEM;
+            // For an OWN Gold Skulltula token the custom-message builder reads player->getItemEntry,
+            // which on the chest-open path is the vanilla offering — its getItemId gets misread as a
+            // RandomizerGet, so the box showed a wrong name (a token reported as "Fire Temple Compass").
+            // Mirror the canonical rando token entry so it resolves to "Gold Skulltula Token". Foreign /
+            // server-delivered tokens already carry the correct entry, so leave those untouched. The
+            // give below still uses the real local giEntry, so the item received is unchanged.
+            if (Randomizer_GetForeignItemOwner() < 0 && Randomizer_MultiShipIsTokenEntry(giEntry)) {
+                this->getItemEntry = Randomizer_MultiShipGoldTokenEntry();
+            }
         }
 #endif
         Message_StartTextbox(play, giEntry.textId, &this->actor);

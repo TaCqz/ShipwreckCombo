@@ -11,6 +11,18 @@
 #include "soh/OTRGlobals.h"
 #include <assert.h>
 
+// F-046 Pass 3: for SHOP logic only, treat a MultiShip game as randomizer when Shop Shuffle is on,
+// so shopsanity slots set up / draw / price / sell through the same paths as rando (the server places
+// shop checks; the client Context holds them, populated by MultiShip). Off keeps MultiShip shops fully
+// vanilla (SHOP_RANDO is false → every gate below behaves exactly as before). Only the SHOP-shuffle
+// gates use this; unrelated rando gates (Deku bag shuffles, the vanilla bomb/bombchu rules) stay
+// IS_RANDO. Collapses to plain IS_RANDO when MultiShip is compiled out.
+#ifdef ENABLE_MULTISHIP
+#define SHOP_RANDO (IS_RANDO || (IS_MULTISHIP && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF))
+#else
+#define SHOP_RANDO IS_RANDO
+#endif
+
 #define FLAGS (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_FRIENDLY | ACTOR_FLAG_UPDATE_CULLING_DISABLED)
 
 void EnGirlA_Init(Actor* thisx, PlayState* play);
@@ -328,7 +340,7 @@ void EnGirlA_SetupAction(EnGirlA* this, EnGirlAActionFunc func) {
 
 // #region SOH [Enhancement] [Randomizer]
 s32 EnGirlA_TryChangeShopItemShip(EnGirlA* this, PlayState* play) {
-    if (!(IS_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0))) {
+    if (!(SHOP_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0))) {
         switch (this->actor.params) {
             case SI_BOMBCHU_10_2:
                 if (Flags_GetItemGetInf(ITEMGETINF_06)) {
@@ -479,7 +491,7 @@ void EnGirlA_InitItem(EnGirlA* this, PlayState* play) {
     }
 
     // #region [Randomizer]
-    if (IS_RANDO && !Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF) {
+    if (SHOP_RANDO && !Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF) {
         s16 objectId = shopItemEntries[params].objID;
 
         if (params == SI_RANDOMIZED_ITEM) {
@@ -517,7 +529,7 @@ void EnGirlA_InitItem(EnGirlA* this, PlayState* play) {
 
 void EnGirlA_Init(Actor* thisx, PlayState* play) {
     // #region [Randomizer] [Enhancment]
-    if (IS_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
+    if (SHOP_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
         EnGirlA* this = (EnGirlA*)thisx;
 
         EnGirlA_TryChangeShopItemShip(this, play);
@@ -703,7 +715,7 @@ s32 EnGirlA_CanBuy_GoronTunic(PlayState* play, EnGirlA* this) {
         return canBuy;
     }
     if (LINK_AGE_IN_YEARS == YEARS_CHILD &&
-        (!IS_RANDO || Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF)) {
+        (!SHOP_RANDO || Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF)) {
         return CANBUY_RESULT_CANT_GET_NOW;
     }
     if (CHECK_OWNED_EQUIP_ALT(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_GORON)) {
@@ -724,7 +736,7 @@ s32 EnGirlA_CanBuy_ZoraTunic(PlayState* play, EnGirlA* this) {
         return canBuy;
     }
     if (LINK_AGE_IN_YEARS == YEARS_CHILD &&
-        (!IS_RANDO || Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF)) {
+        (!SHOP_RANDO || Randomizer_GetSettingValue(RSK_SHOPSANITY) == RO_SHOPSANITY_OFF)) {
         return CANBUY_RESULT_CANT_GET_NOW;
     }
     if (CHECK_OWNED_EQUIP_ALT(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_ZORA)) {
@@ -1215,7 +1227,7 @@ void EnGirlA_SetItemOutOfStock(PlayState* play, EnGirlA* this) {
 
 void EnGirlA_UpdateStockedItem(PlayState* play, EnGirlA* this) {
     // #region [Randomizer] [Enhancment]
-    if (IS_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
+    if (SHOP_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
         ShopItemEntry* itemEntry;
         if (EnGirlA_TryChangeShopItemShip(this, play)) {
             EnGirlA_InitItem(this, play);
@@ -1332,7 +1344,7 @@ void EnGirlA_WaitForObject(EnGirlA* this, PlayState* play) {
             EnGirlA_SetItemDescription(play, this);
         }
         // #region [Enhancment] [Randomizer]
-        if (IS_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
+        if (SHOP_RANDO || CVarGetInteger(CVAR_ENHANCEMENT("BetterBombchuShopping"), 0)) {
             this->setOutOfStockFunc = EnGirlA_SetItemOutOfStock;
             this->updateStockedItemFunc = EnGirlA_UpdateStockedItem;
             this->getItemId = itemEntry->getItemId;

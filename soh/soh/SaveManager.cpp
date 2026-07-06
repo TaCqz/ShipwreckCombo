@@ -457,6 +457,16 @@ void SaveManager::SaveMultiship(SaveContext* saveContext, int sectionID, bool fu
         });
     });
 
+    // F-046 Pass 3: the shuffled shop slots' prices, so shuffled shop items cost the generated
+    // amount across reloads (empty when shopsanity is off).
+    SaveManager::Instance->SaveData("shopPriceCount", (uint32_t)d.shopPrices.size());
+    SaveManager::Instance->SaveArray("shopPrices", d.shopPrices.size(), [&](size_t i) {
+        SaveManager::Instance->SaveStruct("", [&]() {
+            SaveManager::Instance->SaveData("check", d.shopPrices[i].check);
+            SaveManager::Instance->SaveData("price", d.shopPrices[i].price);
+        });
+    });
+
     // F-040: the checks we've already collected in our world. This is the idempotency guard
     // so each check grants/reports exactly once across reloads and reconnects.
     std::vector<int> collected = MultiShipSeed::GetCollected();
@@ -505,6 +515,18 @@ void SaveManager::LoadMultiship() {
         SaveManager::Instance->LoadStruct("", [&]() {
             SaveManager::Instance->LoadData("key", d.settings[i].key);
             SaveManager::Instance->LoadData("value", d.settings[i].value);
+        });
+    });
+
+    // F-046 Pass 3: restore the shuffled shop slot prices (missing in older saves -> empty, so
+    // shops fall back to vanilla item prices). Must land in `d` before LoadFromSnapshot below.
+    uint32_t shopPriceCount = 0;
+    SaveManager::Instance->LoadData("shopPriceCount", shopPriceCount, (uint32_t)0);
+    d.shopPrices.resize(shopPriceCount);
+    SaveManager::Instance->LoadArray("shopPrices", shopPriceCount, [&](size_t i) {
+        SaveManager::Instance->LoadStruct("", [&]() {
+            SaveManager::Instance->LoadData("check", d.shopPrices[i].check);
+            SaveManager::Instance->LoadData("price", d.shopPrices[i].price);
         });
     });
 

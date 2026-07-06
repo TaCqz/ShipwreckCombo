@@ -874,6 +874,19 @@ void CheckTrackerFlagSet(int16_t flagType, int32_t flag) {
             checkFlag = loc.GetActorParams();
         }
         if (checkFlag == flag && scCheck.type == checkMatchType) {
+#ifdef ENABLE_MULTISHIP
+            // MultiShip is NOT IS_RANDO, so this vanilla-tracker flag scan runs — but for an ACTORLESS
+            // cutscene gift (the ocarina locations: child Gift-From-Saria on the Lost Woods bridge, adult
+            // Ocarina of Time from Zelda's escape) there is no actor to run the get-item. It is delivered
+            // + animated purely through the RC-queue (RandomizerOnFlagSetHandler pushed it on this same
+            // flag). Collecting it HERE sets hasObtained, which makes the RC-queue drain skip it — the
+            // item routes to its owner but NO animation shows (the reported Saria bug). Leave it to the
+            // RC-queue, whose item-queue reports + animates it. Chests use scene flags (a different
+            // handler) and NPC / song gives animate via their own actor/VB, so those stay as-is.
+            if (IS_MULTISHIP && loc.GetRCType() == RCTYPE_OCARINA) {
+                return;
+            }
+#endif
             SetCheckCollected(loc.GetRandomizerCheck());
             return;
         }

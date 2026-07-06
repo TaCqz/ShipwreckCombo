@@ -18,6 +18,14 @@ extern PlayState* gPlayState;
 #include <overlays/actors/ovl_En_Dns/z_en_dns.h>
 }
 
+#ifdef ENABLE_MULTISHIP
+// F-046 Pass 3 (re-do of the reverted F-001): shop owner-label helpers, defined in
+// Network/MultiShip/MultiShip.cpp (plain C++ linkage).
+int MultiShip_GetCheckOwner(int check);
+int MultiShip_GetMyWorld(void);
+std::string MultiShip_GetPlayerName(int world);
+#endif
+
 #define RAND_GET_ITEM(rc) OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)
 #define RAND_GET_OVERRIDE(rc) OTRGlobals::Instance->gRandoContext->overrides[rc]
 #define NON_BEAN_MERCHANTS                                                            \
@@ -44,6 +52,23 @@ void BuildMerchantMessage(CustomMessage& msg, RandomizerCheck rc, bool mysteriou
             itemName = item.GetHint().GetHintMessage();
         }
     }
+#ifdef ENABLE_MULTISHIP
+    // F-046 Pass 3 (re-do of reverted F-001): if this shop slot's item belongs to ANOTHER world,
+    // append " (<Player>)" so the shopper knows the purchase goes to that player. Own-world slots +
+    // vanilla stock are unlabeled; not shown for a still-hidden (mysterious) item. The item still
+    // delivers cross-world via the F-040 flow when bought. CustomMessage::operator+= appends to all
+    // languages.
+    if (IS_MULTISHIP && !mysterious) {
+        int owner = MultiShip_GetCheckOwner((int)rc);
+        int myWorld = MultiShip_GetMyWorld();
+        if (owner >= 0 && myWorld >= 0 && owner != myWorld) {
+            std::string ownerName = MultiShip_GetPlayerName(owner);
+            if (!ownerName.empty()) {
+                itemName += " (" + ownerName + ")";
+            }
+        }
+    }
+#endif
     msg.Replace("[[color]]", color);
     msg.InsertNames({ itemName, CustomMessage(std::to_string(location->GetPrice())) });
 }

@@ -278,6 +278,19 @@ void RandomizerOnFlagSetHandler(int16_t flagType, int16_t flag) {
         return;
     }
 
+#ifdef ENABLE_MULTISHIP
+    // F-046 Pass 3: a shop purchase can't use the staged get-item queue — the player is still in the
+    // shopkeeper talk state (Player_Action_Talk), which never consumes a staged getItemId, so an own
+    // item would stall and a foreign item's inventory-skip would mis-time. Mark the check collected
+    // instead; OnRandoSetCheckStatus (MultiShip.cpp) then delivers it robustly: OWN goes through the
+    // delivery queue (drains + animates once the shop menu closes, like F-045 rewards / server items),
+    // FOREIGN is reported to its owner with no local give. Only shop checks; other checks keep queuing.
+    if (IS_MULTISHIP && Rando::StaticData::GetLocation(rc)->IsShop()) {
+        Rando::Context::GetInstance()->GetItemLocation(rc)->SetCheckStatus(RCSHOW_COLLECTED);
+        return;
+    }
+#endif
+
     SPDLOG_INFO("Queuing RC: {}", static_cast<uint32_t>(rc));
     randomizerQueuedChecks.push(rc);
 }
@@ -353,6 +366,18 @@ void RandomizerOnSceneFlagSetHandler(int16_t sceneNum, int16_t flagType, int16_t
 
 static Vec3f spawnPos = { 0.0f, -999.0f, 0.0f };
 
+#ifdef ENABLE_MULTISHIP
+// File-scope forward decls for the RC-queue ammo→rupee conversion below. MultiShip_GetCheckOwner /
+// MultiShip_GetMyWorld are also declared in the ENABLE_MULTISHIP block further down (this handler
+// precedes it). Randomizer_GetItemObtainabilityFromRandomizerCheck + ItemTable_Retrieve are declared
+// in OTRGlobals.h ONLY under #ifndef __cplusplus (C consumers), so re-declare them here with matching
+// extern "C" linkage for this C++ translation unit.
+int MultiShip_GetCheckOwner(int check);
+int MultiShip_GetMyWorld(void);
+extern "C" ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerCheck(RandomizerCheck randomizerCheck);
+extern "C" GetItemEntry ItemTable_Retrieve(int16_t getItemID);
+#endif
+
 void RandomizerOnPlayerUpdateForRCQueueHandler() {
     // If we're already queued, don't queue again
     if (randomizerQueuedCheck != RC_UNKNOWN_CHECK)
@@ -375,6 +400,17 @@ void RandomizerOnPlayerUpdateForRCQueueHandler() {
     GetItemID vanillaItem = (GetItemID)Rando::StaticData::RetrieveItem(vanillaRandomizerGet).GetItemID();
     GetItemEntry getItemEntry =
         Rando::Context::GetInstance()->GetFinalGIEntry(rc, true, (GetItemID)vanillaRandomizerGet);
+#ifdef ENABLE_MULTISHIP
+    // Ammo we can't hold (no bomb bag / quiver / bullet bag / bombchu) is collected as a Blue Rupee
+    // instead — including a "Buy X" shop item found outside a shop, which resolves to plain ammo. Only
+    // for our OWN checks: a foreign ammo check routes to its owner, who converts it on receipt (the
+    // report is check-based, so the server still hands them the real item). Resolved before the item
+    // is staged, so the receipt-confirmation matches the Blue Rupee. (Helpers forward-declared above.)
+    if (IS_MULTISHIP && MultiShip_GetCheckOwner((int)rc) == MultiShip_GetMyWorld() &&
+        Randomizer_GetItemObtainabilityFromRandomizerCheck(rc) == CANT_OBTAIN_NEED_UPGRADE) {
+        getItemEntry = ItemTable_Retrieve(GI_RUPEE_BLUE);
+    }
+#endif
     GetItemCategory getItemCategory = Randomizer_AdjustItemCategory(getItemEntry);
 
     if (loc->HasObtained()) {
@@ -496,6 +532,60 @@ static bool MultiShipIsRewardVB(GIVanillaBehavior id) {
     }
 }
 
+// F-046 Pass 1 (Tab 3 "Shuffle Items"): the non-chest item shuffles are NPC / event gives whose
+// checks are collected through the F-040 flag flow (RandomizerOnFlagSetHandler queues the RC when
+// the actor sets its event / RandInf flag, then the RC queue delivers the placed item, owner-aware).
+// The VANILLA give at that source must be SUPPRESSED so the player doesn't get both — that
+// suppression lives in RandomizerOnVanillaBehaviorHandler's cases below (each sets *should = false).
+// This predicate lets those cases run for a MultiShip game, but ONLY when the matching shuffle is
+// actually on: with the setting off the location is not placed, so we return false and the caller's
+// early-return leaves the vanilla give at its default (the item is still obtained normally). The
+// setting reads come from the live Context, which MultiShip.cpp populates from the synced seed.
+// (Kokiri Sword rides VB_GIVE_ITEM_FROM_CHEST and the Master Sword the ToT pedestal / start-state,
+// so neither is here. Songs are given through VB_GIVE_ITEM_SONG, handled in the TimeSavers hook.)
+static bool MultiShipIsShuffleItemVB(GIVanillaBehavior id) {
+    switch (id) {
+        // Master Sword pedestal pulled in-world (a CHILD start reaching the Temple of Time). The case
+        // suppresses the vanilla Master Sword when shuffled; the pedestal's PULLED flag then drives the
+        // F-040 delivery of the placed item. (An ADULT start's already-pulled pedestal is handled at
+        // save init by MultiShip_AutoCollectStartCheck instead.) Kokiri Sword needs nothing here — it
+        // is a chest, delivered by the already-whitelisted VB_GIVE_ITEM_FROM_CHEST.
+        case VB_GIVE_ITEM_MASTER_SWORD:
+            return RAND_GET_OPTION(RSK_SHUFFLE_MASTER_SWORD).Get() != RO_GENERIC_OFF;
+        case VB_GIVE_ITEM_FAIRY_OCARINA:
+        case VB_GIVE_ITEM_OCARINA_OF_TIME:
+            return RAND_GET_OPTION(RSK_SHUFFLE_OCARINA).Get() != RO_GENERIC_OFF;
+        case VB_GIVE_ITEM_WEIRD_EGG:
+            return RAND_GET_OPTION(RSK_SHUFFLE_WEIRD_EGG).Get() != RO_GENERIC_OFF;
+        case VB_GIVE_ITEM_GERUDO_MEMBERSHIP_CARD:
+            return RAND_GET_OPTION(RSK_SHUFFLE_GERUDO_MEMBERSHIP_CARD).Get() != RO_GENERIC_OFF;
+        case VB_FROGS_GO_TO_IDLE:
+            return RAND_GET_OPTION(RSK_SHUFFLE_FROG_SONG_RUPEES).Get() != RO_GENERIC_OFF;
+        // F-046 Pass 2 — Token Shuffle. VB_GIVE_ITEM_SKULL_TOKEN wraps the vanilla Item_Give (which
+        // is where gsTokens++ lives, z_parameter.c); the GS flag is set unconditionally by the token
+        // actor and drives the F-040 flag/RC-queue delivery of the placed item. Suppressing the
+        // vanilla give when tokensanity is on is exactly what prevents the double-count, and lets the
+        // placed item (own or foreign) deliver instead. The F-041 over-head animation (own token
+        // silent, foreign token animates) then goes live for free.
+        case VB_GIVE_ITEM_SKULL_TOKEN:
+            return RAND_GET_OPTION(RSK_SHUFFLE_TOKENS).Get() != RO_TOKENSANITY_OFF;
+        // Adult trade chain: each of these transitions the shuffled sequence (they call
+        // Randomizer_GetNextAdultTradeItem + rewrite the trade RandInf flags), so they only make
+        // sense — and must only fire — when Adult Trade is shuffled.
+        case VB_TRADE_POCKET_CUCCO:
+        case VB_TRADE_COJIRO:
+        case VB_TRADE_ODD_MUSHROOM:
+        case VB_TRADE_ODD_POTION:
+        case VB_TRADE_SAW:
+        case VB_TRADE_FROG:
+        case VB_TRADE_TIMER_EYEDROPS:
+        case VB_ADULT_KING_ZORA_ITEM_GIVE:
+            return RAND_GET_OPTION(RSK_SHUFFLE_ADULT_TRADE).Get() != RO_GENERIC_OFF;
+        default:
+            return false;
+    }
+}
+
 // Foreign-item one-shot flag (F-040 presentation). When we collect a check whose item belongs
 // to another world, we STILL run the get-item animation + textbox (so the player sees what they
 // found going to whom), but z_player (func_8083E298) must skip ONLY the inventory add — the
@@ -565,6 +655,31 @@ extern "C" void Randomizer_MultiShipApplyVanillaUpgrade(int modIndex, int getIte
 // however SoH classifies tokens. By value to match the C/C++ give-item ABI used elsewhere.
 extern "C" s32 Randomizer_MultiShipIsTokenEntry(GetItemEntry giEntry) {
     return Randomizer_AdjustItemCategory(giEntry) == ITEM_CATEGORY_SKULLTULA_TOKEN ? 1 : 0;
+}
+
+// Canonical rando Gold Skulltula token get-item entry (MOD_RANDOMIZER, RG_GOLD_SKULLTULA_TOKEN).
+// z_player mirrors this into player->getItemEntry before an OWN token's get-item textbox so the
+// custom-message builder (BuildCustomItemMessage, which reads player->getItemEntry / getItemId)
+// resolves the token name. On the chest-open path the offered entry is the VANILLA token, whose
+// getItemId (a GetItemID) the builder would misread as a RandomizerGet and show a wrong name (a
+// token was reported as "Fire Temple Compass"). The actual give still uses the real local giEntry.
+extern "C" GetItemEntry Randomizer_MultiShipGoldTokenEntry(void) {
+    return Rando::StaticData::RetrieveItem(RG_GOLD_SKULLTULA_TOKEN).GetGIEntry_Copy();
+}
+
+// Is the check currently mid-delivery a CHEST? Used by z_player's MultiShip token-animation
+// carve-out: a Gold Skulltula token found IN A CHEST keeps the over-head get-item animation (like
+// any chest item), while a token from a freestanding/skulltula location just shows a textbox
+// without freezing. Reads randomizerQueuedCheck — the RC of a locally-collected check, set by the
+// RC-queue before the give and cleared on receipt. RC_UNKNOWN_CHECK (e.g. a server-delivered item,
+// which carries no local check) is not a chest. Only meaningful for OWN items: the foreign path
+// clears randomizerQueuedCheck as soon as it stages the give, so this must not gate foreign items.
+extern "C" s32 Randomizer_MultiShipCurrentCheckIsChest(void) {
+    if (randomizerQueuedCheck == RC_UNKNOWN_CHECK) {
+        return 0;
+    }
+    auto loc = Rando::StaticData::GetLocation(randomizerQueuedCheck);
+    return (loc != nullptr && loc->GetCollectionCheck().type == SPOILER_CHK_CHEST) ? 1 : 0;
 }
 
 // True when Link is in-game and able to START receiving an item right now. The MultiShip
@@ -684,7 +799,11 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
 
     SPDLOG_INFO("Attempting to give Item mod {} item {} from RC {}", randomizerQueuedItemEntry.modIndex,
                 randomizerQueuedItemEntry.itemId, static_cast<uint32_t>(randomizerQueuedCheck));
-    GiveItemEntryWithoutActor(gPlayState, randomizerQueuedItemEntry);
+    // GiveItemEntryWithoutActor stages the over-head get-item, but RETURNS FALSE without staging
+    // anything when the player isn't in a receivable state (mid-jump, freefall, climbing, an
+    // explosive held, the tail of a scene cutscene, ...). The gate above only rules out blocking-CS /
+    // item-CS / carrying, so this can still fail on a frame it lets through.
+    bool gaveItem = GiveItemEntryWithoutActor(gPlayState, randomizerQueuedItemEntry);
     if (player->stateFlags1 & PLAYER_STATE1_IN_WATER) {
         // Allow the player to receive the item while swimming
         player->stateFlags2 |= PLAYER_STATE2_UNDERWATER;
@@ -692,7 +811,34 @@ void RandomizerOnPlayerUpdateForItemQueueHandler() {
     }
 
 #ifdef ENABLE_MULTISHIP
+    // Retry accounting for a foreign give that didn't engage (see below). Capped so a persistently
+    // un-giveable state can never wedge the delivery queue (which would block ALL later deliveries).
+    static RandomizerCheck sForeignRetryCheck = RC_UNKNOWN_CHECK;
+    static int sForeignRetryFrames = 0;
     if (multiShipForeign) {
+        if (!gaveItem) {
+            // The give didn't engage, so nothing animated and nothing was staged. Prefer to leave the
+            // check queued so the next frame retries once the player can receive it and actually sees
+            // the get-item — an own item is inherently retry-safe (it only clears via OnItemReceive,
+            // which never fires when the give didn't happen), a foreign item is not. This is why the
+            // child's Gift-From-Saria, handed out as the forced Lost Woods cutscene ends, used to route
+            // to its owner with no animation. BUT cap the retries: if the player stays un-giveable, give
+            // up and finalize (report) anyway so the queue can't stall forever.
+            if (sForeignRetryCheck != randomizerQueuedCheck) {
+                sForeignRetryCheck = randomizerQueuedCheck;
+                sForeignRetryFrames = 0;
+            }
+            if (++sForeignRetryFrames < 60) {
+                // Disarm the foreign one-shot we armed above so it can't leak onto an unrelated get-item
+                // before the retry re-arms it.
+                Randomizer_SetForeignItemGet(-1);
+                Randomizer_SetForeignItemCheck(-1);
+                return;
+            }
+            // Cap reached: fall through and finalize even though the give never animated.
+        }
+        sForeignRetryCheck = RC_UNKNOWN_CHECK;
+        sForeignRetryFrames = 0;
         // z_player skips the inventory add for a foreign item, so OnItemReceive won't fire to
         // mark/clear. Do it here: SetCheckStatus fires OnRandoSetCheckStatus (MultiShip records +
         // reports the collection to the server). Clear the queue so the next check can stage once
@@ -1258,7 +1404,7 @@ void RandomizerOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_l
     // vanilla behavior at its default, so no other randomizer game-behavior change leaks into a
     // MultiShip game.
     if (IS_MULTISHIP && !MultiShipIsItemFlowVB(id) && !MultiShipIsAreaAccessVB(id) &&
-        !MultiShipIsRewardVB(id)) {
+        !MultiShipIsRewardVB(id) && !MultiShipIsShuffleItemVB(id)) {
         va_end(args);
         return;
     }

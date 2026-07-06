@@ -5,10 +5,11 @@
 // MultiShipSeed — the client-side store for the multiworld seed handed out by the
 // MultiShip server (F-035 Part B).
 //
-// The server sends the FULL v3 SeedData over the wire, byte-identical to the
-// .multiship file (see the sibling MultiShip repo: src/rando/SeedFile.{h,cpp} +
-// docs/multiship-wire-v3.md). This module base64-decodes that blob and deserializes
-// the v3 byte layout into a structured, mutex-guarded store so the client can:
+// The server sends the FULL SeedData over the wire (currently schema v4, which adds the
+// shopsanity shop-price table to v3), byte-identical to the .multiship file (see the sibling
+// MultiShip repo: src/rando/SeedFile.{h,cpp} + docs/multiship-wire-v3.md). This module
+// base64-decodes that blob and deserializes the byte layout (v3 + v4) into a structured,
+// mutex-guarded store so the client can:
 //   - validate the player's chosen world name before claiming (from the seed-info
 //     player list), greying out 'Start Multiworld Save' otherwise,
 //   - persist the placements / owners / settings into the QUEST_MULTISHIP save (via
@@ -47,6 +48,14 @@ struct Setting {
     int value = 0;
 };
 
+// One shuffled shop slot's price (F-046 Pass 3 shopsanity). `check` is a RandomizerCheck
+// enum value; `price` the rupee cost. Prices are per-check (world-agnostic); applied to the
+// Context via ItemLocation::SetCustomPrice so the slot shows + charges the generated cost.
+struct ShopPrice {
+    int check = 0;
+    int price = 0;
+};
+
 // The deserialized v3 seed + this client's place in it. A copy is returned by
 // Snapshot() (for saving) and pushed by LoadFromSnapshot() (on load).
 struct Data {
@@ -57,6 +66,7 @@ struct Data {
     std::vector<std::string> players;
     std::vector<Placement> placements;
     std::vector<Setting> settings;
+    std::vector<ShopPrice> shopPrices;  // shuffled shop slot prices (shopsanity; empty if off)
 };
 
 // --- Seed-info (non-locking) — learned from the server's multiworld_seed_info push.
@@ -67,12 +77,12 @@ std::vector<std::string> GetKnownPlayers();
 bool IsNameValid(const std::string& name);
 
 // --- Full seed (granted) -----------------------------------------------------------
-// Decode base64 -> parse the v3 byte layout -> populate the store + mark ready. Returns
-// false (and fills `err`) on malformed input; the store is left unchanged on failure.
+// Decode base64 -> parse the seed byte layout (v3 or v4) -> populate the store + mark ready.
+// Returns false (and fills `err`) on malformed input; the store is left unchanged on failure.
 // `worldId` is the server-assigned world index from the multiworld_seed envelope.
-bool DeserializeV3FromBase64(const std::string& base64, int worldId, std::string& err);
+bool DeserializeSeedFromBase64(const std::string& base64, int worldId, std::string& err);
 
-// True once a full v3 seed is present (received this session or loaded from a save).
+// True once a full seed is present (received this session or loaded from a save).
 bool IsReady();
 
 // Thread-safe copy of the full store (for SaveManager serialization / inspection).

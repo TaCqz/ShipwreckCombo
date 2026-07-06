@@ -394,8 +394,16 @@ static bool GiveItemHandler(std::shared_ptr<Ship::Console> Console, const std::v
         getItemEntry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, std::stoi(args[2]));
     } else if (args[1].compare("randomizer") == 0) {
         getItemEntry = Rando::StaticData::RetrieveItem((RandomizerGet)std::stoi(args[2])).GetGIEntry_Copy();
+    } else if (args[1].compare("randomizer_check") == 0) {
+        // Give the fully-resolved entry for a specific RandomizerCheck id. Unlike "randomizer" (by
+        // RandomizerGet), this runs GetFinalGIEntry, so a per-check ice-trap disguise (the LooksLike
+        // model + trick name from the Context override) is applied to the over-head get-item. MultiShip
+        // delivers own shop ice traps this way so the animation matches the shelf/bait, not the raw
+        // RG_ICE_TRAP placeholder model.
+        getItemEntry =
+            OTRGlobals::Instance->gRandomizer->GetItemFromKnownCheck((RandomizerCheck)std::stoi(args[2]), GI_NONE);
     } else {
-        ERROR_MESSAGE("[SOH] Invalid argument passed, must be 'vanilla' or 'randomizer'");
+        ERROR_MESSAGE("[SOH] Invalid argument passed, must be 'vanilla', 'randomizer', or 'randomizer_check'");
         return 1;
     }
 

@@ -19,6 +19,15 @@
 #include <assert.h>
 #include "soh/OTRGlobals.h"
 
+// F-046 Pass 3: treat a MultiShip game as randomizer FOR SHOP setup only, and only when Shop Shuffle
+// is on, so the shelf slots become shopsanity checks exactly like rando (mirrors SHOP_RANDO in
+// z_en_girla.c). Off keeps MultiShip shops fully vanilla. Collapses to IS_RANDO without MultiShip.
+#ifdef ENABLE_MULTISHIP
+#define SHOP_RANDO (IS_RANDO || (IS_MULTISHIP && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF))
+#else
+#define SHOP_RANDO IS_RANDO
+#endif
+
 #define FLAGS (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_FRIENDLY | ACTOR_FLAG_UPDATE_CULLING_DISABLED)
 
 void EnOssan_Init(Actor* thisx, PlayState* play);
@@ -432,7 +441,7 @@ void EnOssan_SpawnItemsOnShelves(EnOssan* this, PlayState* play, ShopItem* shopI
             this->shelfSlots[i] = NULL;
         } else {
             itemParams = sShopItemReplaceFunc[shopItems->shopItemIndex](shopItems->shopItemIndex);
-            if (IS_RANDO && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF) {
+            if (SHOP_RANDO && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF) {
                 ShopItemIdentity shopItemIdentity = Randomizer_IdentifyShopItem(play->sceneNum, i + 1);
                 if (shopItemIdentity.identity.randomizerCheck != RC_UNKNOWN_CHECK) {
                     itemParams = shopItemIdentity.enGirlAShopItem;
@@ -452,7 +461,7 @@ void EnOssan_SpawnItemsOnShelves(EnOssan* this, PlayState* play, ShopItem* shopI
                     shelves->actor.world.pos.y + shopItems->yOffset, shelves->actor.world.pos.z + shopItems->zOffset,
                     shelves->actor.shape.rot.x, shelves->actor.shape.rot.y + sItemShelfRot[i],
                     shelves->actor.shape.rot.z, itemParams);
-                if (IS_RANDO && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF) {
+                if (SHOP_RANDO && Randomizer_GetSettingValue(RSK_SHOPSANITY) != RO_SHOPSANITY_OFF) {
                     this->shelfSlots[i]->randoSlotIndex = i + 1;
                 }
             }
@@ -619,10 +628,13 @@ void EnOssan_Init(Actor* thisx, PlayState* play) {
         return;
     }
 
-    // Don't kill bombchu shop actor in rando, making it so the shop is immediately open
+    // Don't kill the bombchu shop actor in rando — OR in a MultiShip shop-shuffle game (SHOP_RANDO) —
+    // so the shop is immediately open. The Bombchu Shop is a shopsanity shop (RC_MARKET_BOMBCHU_SHOP_
+    // ITEM_1..8), so its keeper MUST be alive for those checks to be reachable; without this MultiShip
+    // (not IS_RANDO) kills it whenever Dodongo's Cavern isn't done and the whole shop reads as empty.
     // Flags_GetEventChkInf(EVENTCHKINF_USED_DODONGOS_CAVERN_BLUE_WARP) - Completed Dodongo's Cavern
     if (this->actor.params == OSSAN_TYPE_BOMBCHUS &&
-        !Flags_GetEventChkInf(EVENTCHKINF_USED_DODONGOS_CAVERN_BLUE_WARP) && !IS_RANDO) {
+        !Flags_GetEventChkInf(EVENTCHKINF_USED_DODONGOS_CAVERN_BLUE_WARP) && !SHOP_RANDO) {
         Actor_Kill(&this->actor);
         return;
     }

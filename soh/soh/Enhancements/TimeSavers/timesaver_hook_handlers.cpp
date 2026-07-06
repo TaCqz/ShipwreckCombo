@@ -721,11 +721,24 @@ void TimeSaverOnVanillaBehaviorHandler(GIVanillaBehavior id, bool* should, va_li
         case VB_PLAY_BOLERO_OF_FIRE_CS:
         case VB_PLAY_SERENADE_OF_WATER_CS:
         case VB_PLAY_SONG_OF_STORMS_CS:
-        case VB_PLAY_PRELUDE_OF_LIGHT_CS:
-            if (CVarGetInteger(CVAR_ENHANCEMENT("TimeSavers.SkipCutscene.LearnSong"), IS_RANDO) || IS_RANDO) {
+        case VB_PLAY_PRELUDE_OF_LIGHT_CS: {
+            bool suppressSong =
+                CVarGetInteger(CVAR_ENHANCEMENT("TimeSavers.SkipCutscene.LearnSong"), IS_RANDO) || IS_RANDO;
+#ifdef ENABLE_MULTISHIP
+            // F-046: MultiShip song shuffle. VB_GIVE_ITEM_SONG is the single chokepoint for every
+            // song give (Sheik, Impa, Saria, the windmill, and the generic ocarina-playback path in
+            // z_message_PAL.c). Suppress the vanilla song give + its learn cutscene so the PLACED item
+            // — delivered via the F-040 flag/RC-queue flow when the song's EVENTCHKINF_LEARNED_* flag
+            // fires — isn't accompanied by the vanilla song (a double give). Only when songs are
+            // actually shuffled; Off keeps songs at their vanilla locations with nothing placed.
+            suppressSong = suppressSong ||
+                           (IS_MULTISHIP && RAND_GET_OPTION(RSK_SHUFFLE_SONGS).Get() != RO_SONG_SHUFFLE_OFF);
+#endif
+            if (suppressSong) {
                 *should = false;
             }
             break;
+        }
         case VB_FREEZE_ON_SKULL_TOKEN:
             if (CVarGetInteger(CVAR_ENHANCEMENT("SkulltulaFreeze"), 0)) {
                 *should = false;

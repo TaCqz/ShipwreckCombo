@@ -152,6 +152,22 @@ void BuildCustomItemMessage(Player* player, CustomMessage& msg) {
         }
         return;
     }
+    // An OWN MOD_NONE (vanilla-table) item routed to this custom box — e.g. a MultiShip Gold Skulltula
+    // token, forced here so its box is skippable instead of the frozen unskippable vanilla token
+    // message — has no RandomizerGet: `rgid` is its GetItemID, which the RandomizerGet name resolution
+    // below misreads (the token showed as "Fire Temple Compass"). Use its plain vanilla name instead,
+    // mirroring the MOD_NONE handling in the foreign path above.
+    if (IS_MULTISHIP && player->getItemEntry.objectId != OBJECT_INVALID &&
+        player->getItemEntry.modIndex == MOD_NONE) {
+        std::string itemName = SohUtils::GetItemName(player->getItemEntry.itemId);
+        msg = CustomMessage("You found " + itemName + "!", "Du hast " + itemName + " gefunden!",
+                            "Vous avez trouvé " + itemName + "!", TEXTBOX_TYPE_BLUE);
+        // Prepend the item's icon (e.g. the Gold Skulltula token). AutoFormat(ItemID) inserts
+        // ITEM_OBTAINED(iid) — the vanilla-table itemId is exactly that icon; plain AutoFormat() shows
+        // text only, which is why the token box had no icon.
+        msg.AutoFormat(static_cast<ItemID>(player->getItemEntry.itemId));
+        return;
+    }
 #endif
     CustomMessage name = CustomMessage(
         Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(MultiShipDisplayNameRg(rgid))).GetName(),
