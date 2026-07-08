@@ -539,6 +539,94 @@ extern "C" void Randomizer_MultiShipApplyStartState() {
     if (Randomizer_GetSettingValue(RSK_GANONS_BOSS_KEY) == RO_GANON_BOSS_KEY_STARTWITH) {
         gSaveContext.inventory.dungeonItems[SCENE_GANONS_TOWER] |= 1;
     }
+
+    // F-048 — Tab 5 "Starting Items". Grant each enabled starting item ONCE. The whole function is
+    // gated by the persisted start-state marker (MultiShip_ApplyStartState), so a reload never re-runs
+    // it; the assignments below (gsTokens, healthCapacity, ocarina slot) are idempotent anyway, and
+    // Item_Give of a song/equip just re-sets a flag. This mirrors the vanilla SetStartingItems and the
+    // beans block of Randomizer_InitSaveFile — which do NOT run for a QUEST_MULTISHIP file. The engine
+    // (MultiShip/Fill.cpp) removed the pool-relevant items (swords, ocarina, the 12 songs) from
+    // placement when their Tab 3 shuffle is on and treated them as owned from sphere 0, so granting
+    // them here is not a double-source. Consumables (Deku Shield / sticks / nuts / beans) and the two
+    // quantities (Starting Hearts, Starting GS tokens) are pure start state with no pool effect.
+    if (Randomizer_GetSettingValue(RSK_STARTING_KOKIRI_SWORD)) {
+        Item_Give(NULL, ITEM_SWORD_KOKIRI);
+    }
+    if (Randomizer_GetSettingValue(RSK_STARTING_DEKU_SHIELD)) {
+        Item_Give(NULL, ITEM_SHIELD_DEKU);
+    }
+
+    // Songs. Item_Give(ITEM_SONG_*) sets a quest-item bit, so it is idempotent — a song also granted
+    // by the Skip Child Zelda lullaby above (or delivered via F-040 when song shuffle is on) can't
+    // double. Each started song was removed from the engine's song pool.
+    if (Randomizer_GetSettingValue(RSK_STARTING_ZELDAS_LULLABY))    Item_Give(NULL, ITEM_SONG_LULLABY);
+    if (Randomizer_GetSettingValue(RSK_STARTING_EPONAS_SONG))       Item_Give(NULL, ITEM_SONG_EPONA);
+    if (Randomizer_GetSettingValue(RSK_STARTING_SARIAS_SONG))       Item_Give(NULL, ITEM_SONG_SARIA);
+    if (Randomizer_GetSettingValue(RSK_STARTING_SUNS_SONG))         Item_Give(NULL, ITEM_SONG_SUN);
+    if (Randomizer_GetSettingValue(RSK_STARTING_SONG_OF_TIME))      Item_Give(NULL, ITEM_SONG_TIME);
+    if (Randomizer_GetSettingValue(RSK_STARTING_SONG_OF_STORMS))    Item_Give(NULL, ITEM_SONG_STORMS);
+    if (Randomizer_GetSettingValue(RSK_STARTING_MINUET_OF_FOREST))  Item_Give(NULL, ITEM_SONG_MINUET);
+    if (Randomizer_GetSettingValue(RSK_STARTING_BOLERO_OF_FIRE))    Item_Give(NULL, ITEM_SONG_BOLERO);
+    if (Randomizer_GetSettingValue(RSK_STARTING_SERENADE_OF_WATER)) Item_Give(NULL, ITEM_SONG_SERENADE);
+    if (Randomizer_GetSettingValue(RSK_STARTING_REQUIEM_OF_SPIRIT)) Item_Give(NULL, ITEM_SONG_REQUIEM);
+    if (Randomizer_GetSettingValue(RSK_STARTING_NOCTURNE_OF_SHADOW))Item_Give(NULL, ITEM_SONG_NOCTURNE);
+    if (Randomizer_GetSettingValue(RSK_STARTING_PRELUDE_OF_LIGHT))  Item_Give(NULL, ITEM_SONG_PRELUDE);
+
+    // Starting GS token count (assignment, so idempotent).
+    if (Randomizer_GetSettingValue(RSK_STARTING_SKULLTULA_TOKEN)) {
+        gSaveContext.inventory.questItems |= gBitFlags[QUEST_SKULL_TOKEN];
+        gSaveContext.inventory.gsTokens = Randomizer_GetSettingValue(RSK_STARTING_SKULLTULA_TOKEN);
+    }
+
+    // Starting hearts. The stored value is an index (hearts = value + 1); only touch health when it
+    // differs from the vanilla 3, matching SetStartingItems. The engine's logic reads the same value
+    // (BaseHearts), so its reachability and this heart count stay in lockstep.
+    if ((Randomizer_GetSettingValue(RSK_STARTING_HEARTS) + 1) != 3) {
+        gSaveContext.healthCapacity = (Randomizer_GetSettingValue(RSK_STARTING_HEARTS) + 1) * 16;
+        gSaveContext.health = gSaveContext.healthCapacity;
+    }
+
+    // Starting ocarina: Fairy or Ocarina of Time in the ocarina slot. The engine removed the matching
+    // number of progressive ocarinas from the pool (Fairy = one, Ocarina of Time = both).
+    if (Randomizer_GetSettingValue(RSK_STARTING_OCARINA)) {
+        INV_CONTENT(ITEM_OCARINA_FAIRY) =
+            Randomizer_GetSettingValue(RSK_STARTING_OCARINA) == RO_STARTING_OCARINA_FAIRY
+                ? ITEM_OCARINA_FAIRY
+                : ITEM_OCARINA_TIME;
+    }
+
+    // Deku stick / nut ammo. MultiShip does not offer the stick/nut BAG shuffles (they aren't curated),
+    // so — unlike SetStartingItems — there is no bag-shuffle guard; the bags are never shuffled.
+    if (Randomizer_GetSettingValue(RSK_STARTING_STICKS)) {
+        GiveLinkDekuSticks(10);
+    }
+    if (Randomizer_GetSettingValue(RSK_STARTING_NUTS)) {
+        GiveLinkDekuNuts(20);
+    }
+
+    // Magic beans (mirrors the beans block of Randomizer_InitSaveFile). The merchant-shuffle and
+    // skip-planting-beans settings aren't curated for MultiShip, so their default-off branch applies:
+    // start with the bean slot, marked bought, and a full stack of ammo.
+    if (Randomizer_GetSettingValue(RSK_STARTING_BEANS)) {
+        INV_CONTENT(ITEM_BEAN) = ITEM_BEAN;
+        BEANS_BOUGHT = 10;
+        AMMO(ITEM_BEAN) = 10;
+    }
+
+    // Master Sword. It may ALSO be granted by the adult-start block at the top of this function (F-044,
+    // when the sword is not shuffled), so guard on ownership to grant it exactly once. Adult gets it
+    // equipped (Item_Give), child owns it un-equipped (matches SetStartingItems). When Master Sword
+    // shuffle is on, the adult-start block deliberately does not equip — it leaves the pedestal to the
+    // owner-aware auto-collect — so this grant supplies the sword while the pedestal still delivers its
+    // (removed-from-pool, replaced) placed item.
+    if (Randomizer_GetSettingValue(RSK_STARTING_MASTER_SWORD) &&
+        !CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER)) {
+        if (startingAge == RO_AGE_ADULT) {
+            Item_Give(NULL, ITEM_SWORD_MASTER);
+        } else {
+            gSaveContext.inventory.equipment |= OWNED_EQUIP_FLAG(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER);
+        }
+    }
 }
 #endif
 

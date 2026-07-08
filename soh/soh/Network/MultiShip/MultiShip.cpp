@@ -317,6 +317,19 @@ static int MultiShip_CopyHonoredSettingsToContext() {
         // BuildShopMessage OnOpenText hook (which builds the shop item name + owner label). Delivery
         // on purchase rides the F-040 flag flow. Without this in the Context, shops stay vanilla.
         RSK_SHOPSANITY,
+        // F-048 — Tab 5 "Starting Items". Read by the F-048 block of Randomizer_MultiShipApplyStartState
+        // (savefile.cpp), which grants each enabled item ONCE at save init. All are copied so the grant
+        // reads the shipped value (an unpopulated Context reads 0 == none/off, so without the copy no
+        // starting item would ever be granted). The engine removed the pool-relevant ones (swords /
+        // ocarina / songs) from placement, so granting them here is not a double-source; the grant-only
+        // quantities (Deku Shield / sticks / nuts / beans, hearts, GS tokens) are pure client state.
+        RSK_STARTING_KOKIRI_SWORD, RSK_STARTING_MASTER_SWORD, RSK_STARTING_DEKU_SHIELD,
+        RSK_STARTING_OCARINA, RSK_STARTING_STICKS, RSK_STARTING_NUTS, RSK_STARTING_BEANS,
+        RSK_STARTING_SKULLTULA_TOKEN, RSK_STARTING_HEARTS,
+        RSK_STARTING_ZELDAS_LULLABY, RSK_STARTING_EPONAS_SONG, RSK_STARTING_SARIAS_SONG,
+        RSK_STARTING_SUNS_SONG, RSK_STARTING_SONG_OF_TIME, RSK_STARTING_SONG_OF_STORMS,
+        RSK_STARTING_MINUET_OF_FOREST, RSK_STARTING_BOLERO_OF_FIRE, RSK_STARTING_SERENADE_OF_WATER,
+        RSK_STARTING_REQUIEM_OF_SPIRIT, RSK_STARTING_NOCTURNE_OF_SHADOW, RSK_STARTING_PRELUDE_OF_LIGHT,
     };
     int copied = 0;
     for (const auto& s : d.settings) {
