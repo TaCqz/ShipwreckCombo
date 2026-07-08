@@ -415,6 +415,13 @@ extern "C" void Randomizer_MultiShipApplyStartState() {
         }
     }
 
+    // The basic (child) wallet is owned from the start. MultiShip never shuffles it (the child-wallet
+    // shuffle isn't offered), so set RAND_INF_HAS_WALLET unconditionally — the rando init gates this on
+    // SHUFFLE_CHILD_WALLET being off, which is always the case here. Without it a collected Progressive
+    // Wallet resolves to the CHILD wallet (which you already effectively have, holding 99 rupees) instead
+    // of advancing Adult -> Giant -> Tycoon.
+    Flags_SetRandomizerInf(RAND_INF_HAS_WALLET);
+
     // Full Wallets: fill the wallet (GiveLinkRupees caps to the current wallet max).
     if (Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
         GiveLinkRupees(9001);

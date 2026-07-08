@@ -98,6 +98,12 @@ struct PendingDelivery {
     // -1 until resolved.
     int expectModIndex = -1;
     int expectGetItemId = -1;
+    // F-047: for a CROSS-WORLD ice trap, the originating (check, collectorWorld) the server tagged the
+    // give with. The drain re-derives the disguise the collecting world showed from these + the seed
+    // (on the main thread) and rewrites `command` to a disguised "randomizer_trap" give. -1 = not an
+    // ice trap (or an untagged / same-world give): delivered by `command` as-is.
+    int trapCheck = -1;
+    int trapCollectorWorld = -1;
 };
 static std::mutex gDeliveryMutex;
 static std::deque<PendingDelivery> gDeliveryQueue;
@@ -115,6 +121,39 @@ extern "C" bool Randomizer_MultiShipDeliveringTracked(void) {
     return gMultiShipDeliveringTracked;
 }
 
+// F-047: derive a CROSS-WORLD ice trap's disguise model exactly as the world it was collected in
+// would. The disguise is deterministic from (seed, check) — a splitmix state, independent of world —
+// drawn from `collectorWorld`'s placed items (the named-only pool base rando's CreateItemOverrides and
+// our own load-time derivation both use). Building the pool from the COLLECTOR's world (not ours) is
+// what makes the receiving client render the SAME disguise the collecting client showed. Returns
+// RG_NONE if no seed is loaded or that world has no valid disguise models (caller keeps the raw trap).
+static RandomizerGet MultiShip_DeriveTrapDisguise(int collectorWorld, int check) {
+    MultiShipSeed::Data d = MultiShipSeed::Snapshot();
+    if (!d.ready) {
+        return RG_NONE;
+    }
+    std::set<RandomizerGet> pool;
+    for (const auto& pl : d.placements) {
+        if (pl.locWorld != collectorWorld) {
+            continue;
+        }
+        RandomizerGet rg = static_cast<RandomizerGet>(pl.item);
+        if (rg != RG_ICE_TRAP && rg != RG_NONE && Rando::Traps::HasTrapName(static_cast<uint16_t>(rg))) {
+            pool.insert(rg);
+        }
+    }
+    if (pool.empty()) {
+        return RG_NONE;
+    }
+    // Same keying as the load-time own-world derivation (see LoadMultiship), so a given (seed, check)
+    // yields the identical model on both clients — splitmix-style state, guarded non-zero.
+    uint64_t state = d.seed ^ (static_cast<uint64_t>(check) * 0x9E3779B97F4A7C15ULL + 0x165667B19E3779F9ULL);
+    if (state == 0) {
+        state = 0x9E3779B97F4A7C15ULL;
+    }
+    return ShipUtils::RandomElementFromSet(pool, &state);
+}
+
 // True when Link is in-game and able to START a get-item (defined in hook_handlers.cpp,
 // which has player access). Does NOT check getItemId, so the drain can re-attempt a give
 // that staged but stranded; an in-progress get-item is still excluded.
@@ -125,6 +164,9 @@ extern "C" bool Randomizer_PlayerCanReceiveItem(void);
 extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId);
 // Diagnostic: logs why the player currently can't receive an item (stall debugging).
 extern "C" void Randomizer_LogReceiveBlockReason(void);
+// Backstop (defined in hook_handlers.cpp): force-end a get-item that has stalled and can't complete,
+// so one un-giveable item can't jam the delivery queue forever. Only acts when wedged in a get-item.
+extern "C" bool Randomizer_MultiShipRecoverStuckGetItem(void);
 // Obtainability of a RandomizerGet against the CURRENT inventory (defined in OTRGlobals.cpp). Used to
 // convert ammo the recipient can't hold (no bomb bag / quiver / ...) into a Blue Rupee at delivery
 // time. Forward-declared to avoid pulling the heavy OTRGlobals.h into this translation unit.
@@ -844,6 +886,19 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             }
         }
 
+        // F-047: a CROSS-WORLD ice trap arrives tagged with the originating (check, collectorWorld) so
+        // the drain can re-derive the disguise the collecting world showed (see the drain hook — done
+        // there, on the MAIN thread, because the disguise lookup lazily inits a shared table). Capture
+        // them here; they stay -1 for non-trap gives and are ignored then.
+        int trapCheck = -1;
+        int trapCollectorWorld = -1;
+        if (cmdRgId == static_cast<int>(RG_ICE_TRAP) && payload.contains("check") &&
+            payload["check"].is_number_integer() && payload.contains("collectorWorld") &&
+            payload["collectorWorld"].is_number_integer()) {
+            trapCheck = payload["check"].get<int>();
+            trapCollectorWorld = payload["collectorWorld"].get<int>();
+        }
+
         // MultiShip crash-safe delivery: a server-routed item carries a monotonic
         // `seq` and the `multiship` flag. Rather than grant it here on the network
         // thread (which would deliver during loading and overwrite the previous
@@ -868,6 +923,8 @@ void MultiShip::OnIncomingJson(nlohmann::json payload) {
             }
             d.command = command;
             d.rgId = cmdRgId;
+            d.trapCheck = trapCheck;                    // F-047: cross-world ice-trap disguise inputs
+            d.trapCollectorWorld = trapCollectorWorld;  // (-1 unless this is a tagged ice trap)
             {
                 std::lock_guard<std::mutex> lk(gDeliveryMutex);
                 gDeliveryQueue.push_back(std::move(d));
@@ -1075,13 +1132,44 @@ void MultiShip::RegisterHooks() {
         if (!isConnected || gSaveContext.ship.quest.id != QUEST_MULTISHIP) {
             return;
         }
+        // Safety net (~15s at the ~20Hz this hook runs): if a delivery we already dispatched leaves us
+        // unable to receive for this long, its get-item has STALLED (an item whose get-item cutscene
+        // never completes — see the heart-container object/animation stall). Force-recover + skip it so
+        // ONE un-completable item can't jam every later delivery forever. Far longer than any normal
+        // get-item (a few seconds), so a legitimately-in-progress one is never disturbed.
+        static constexpr uint32_t kStuckDeliveryRecoverFrames = 300;
+        static uint32_t sStuckFrames = 0;
         if (!Randomizer_PlayerCanReceiveItem()) {
             // Diagnostic: if something is queued but we can't (re)attempt, log WHY
             // (throttled) so a stall's cause is visible instead of guessed at.
             bool queued;
+            bool frontDispatched = false;
             {
                 std::lock_guard<std::mutex> lk(gDeliveryMutex);
                 queued = !gDeliveryQueue.empty();
+                // expectModIndex >= 0 means the front give was already issued -> a give is in flight.
+                frontDispatched = queued && gDeliveryQueue.front().expectModIndex >= 0;
+            }
+            if (frontDispatched && ++sStuckFrames >= kStuckDeliveryRecoverFrames) {
+                sStuckFrames = 0;
+                if (Randomizer_MultiShipRecoverStuckGetItem()) {
+                    std::lock_guard<std::mutex> lk(gDeliveryMutex);
+                    if (!gDeliveryQueue.empty()) {
+                        PendingDelivery& f = gDeliveryQueue.front();
+                        // Treat it as delivered for the crash-safe stream so it isn't re-sent on reload.
+                        if (f.tracked) {
+                            gSaveContext.ship.multishipReceivedSeq = f.seq + 1;
+                        }
+                        SPDLOG_WARN("[MultiShip] Delivery STALLED (rg={}, tracked={}, seq={}); force-recovered "
+                                    "the get-item and skipped it so the queue can proceed",
+                                    f.rgId, f.tracked, f.seq);
+                        gDeliveryQueue.pop_front();
+                    }
+                }
+                return;
+            }
+            if (!frontDispatched) {
+                sStuckFrames = 0;
             }
             if (queued) {
                 static uint32_t sBlockLog = 0;
@@ -1091,6 +1179,7 @@ void MultiShip::RegisterHooks() {
             }
             return;
         }
+        sStuckFrames = 0;  // able to receive again -> nothing is stalled
 
         PendingDelivery d;
         bool have = false;
@@ -1110,6 +1199,20 @@ void MultiShip::RegisterHooks() {
                         CANT_OBTAIN_NEED_UPGRADE) {
                         front.rgId = (int)RG_BLUE_RUPEE;
                         front.command = "give_item randomizer " + std::to_string((int)RG_BLUE_RUPEE);
+                    }
+                    // F-047: a CROSS-WORLD ice trap must render its disguise, not the raw RG_ICE_TRAP
+                    // model. Re-derive the SAME disguise the collecting world showed (deterministic from
+                    // seed + the tagged check, drawn from the collector world's item pool) and give a
+                    // disguised ice-trap entry via "randomizer_trap". Done HERE on the main thread (the
+                    // lookup lazily inits a shared table) and ONCE (this block is entered only while
+                    // expectModIndex < 0). rgId stays RG_ICE_TRAP, so the resolve below + the receipt
+                    // match + the freeze are unchanged — only the model + get-item/troll name change.
+                    if (front.rgId == (int)RG_ICE_TRAP && front.trapCheck >= 0) {
+                        RandomizerGet disguise =
+                            MultiShip_DeriveTrapDisguise(front.trapCollectorWorld, front.trapCheck);
+                        if (disguise != RG_NONE) {
+                            front.command = "give_item randomizer_trap " + std::to_string((int)disguise);
+                        }
                     }
                     Randomizer_ResolveGive(front.rgId, &front.expectModIndex, &front.expectGetItemId);
                 }

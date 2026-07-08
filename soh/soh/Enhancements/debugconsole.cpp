@@ -402,8 +402,31 @@ static bool GiveItemHandler(std::shared_ptr<Ship::Console> Console, const std::v
         // RG_ICE_TRAP placeholder model.
         getItemEntry =
             OTRGlobals::Instance->gRandomizer->GetItemFromKnownCheck((RandomizerCheck)std::stoi(args[2]), GI_NONE);
+    } else if (args[1].compare("randomizer_trap") == 0) {
+        // Give an ICE TRAP disguised as the arg RandomizerGet: the ice-trap effect + identity, but the
+        // over-head model and get-item/troll name of that item. Mirrors Context::GetFinalGIEntry's
+        // override overlay (draw fields only). Used by MultiShip to deliver a CROSS-WORLD ice trap with
+        // the disguise the COLLECTING world showed — the receiving client can't run GetFinalGIEntry for
+        // a check that lives in the OTHER world's Context (its ItemLocation isn't populated locally), so
+        // it derives the disguise model itself and passes it here. Falls back to a raw ice trap if the
+        // disguise model is invalid.
+        getItemEntry = Rando::StaticData::RetrieveItem(RG_ICE_TRAP).GetGIEntry_Copy();
+        const RandomizerGet disguise = (RandomizerGet)std::stoi(args[2]);
+        if (disguise != RG_NONE && disguise != RG_ICE_TRAP) {
+            // GetGIEntry() returns a shared_ptr (see Item::GetGIEntry); overlay only the draw fields,
+            // exactly as Context::GetFinalGIEntry does for a per-check ice-trap override.
+            const auto fake = Rando::StaticData::RetrieveItem(disguise).GetGIEntry();
+            if (fake != nullptr) {
+                getItemEntry.gid = fake->gid;
+                getItemEntry.gi = fake->gi;
+                getItemEntry.drawItemId = fake->drawItemId;
+                getItemEntry.drawModIndex = fake->drawModIndex;
+                getItemEntry.drawFunc = fake->drawFunc;
+            }
+        }
     } else {
-        ERROR_MESSAGE("[SOH] Invalid argument passed, must be 'vanilla', 'randomizer', or 'randomizer_check'");
+        ERROR_MESSAGE("[SOH] Invalid argument passed, must be 'vanilla', 'randomizer', 'randomizer_check', or "
+                      "'randomizer_trap'");
         return 1;
     }
 

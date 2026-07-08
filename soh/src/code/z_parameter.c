@@ -2071,13 +2071,23 @@ u8 Item_Give(PlayState* play, u8 item) {
         return Return_Item(item, MOD_NONE, ITEM_NONE);
     } else if (item == ITEM_WALLET_ADULT) {
         Inventory_ChangeUpgrade(UPG_WALLET, 1);
-        if (IS_RANDO && Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
+        // Full Wallets also fills MultiShip wallet upgrades (MultiShip is intentionally NOT IS_RANDO).
+        if ((IS_RANDO
+#ifdef ENABLE_MULTISHIP
+             || IS_MULTISHIP
+#endif
+             ) && Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
             Rupees_ChangeBy(200);
         }
         return Return_Item(item, MOD_NONE, ITEM_NONE);
     } else if (item == ITEM_WALLET_GIANT) {
         Inventory_ChangeUpgrade(UPG_WALLET, 2);
-        if (IS_RANDO && Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
+        // Full Wallets also fills MultiShip wallet upgrades (MultiShip is intentionally NOT IS_RANDO).
+        if ((IS_RANDO
+#ifdef ENABLE_MULTISHIP
+             || IS_MULTISHIP
+#endif
+             ) && Randomizer_GetSettingValue(RSK_FULL_WALLETS)) {
             Rupees_ChangeBy(500);
         }
         return Return_Item(item, MOD_NONE, ITEM_NONE);

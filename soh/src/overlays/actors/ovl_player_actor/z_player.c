@@ -7348,16 +7348,19 @@ s32 Player_ActionHandler_2(Player* this, PlayState* play) {
                 // item — including junk (rupees, ammo, ...) that vanilla would silently add — so the
                 // player always sees what they got and who it's for. Gold Skulltula TOKENS are the
                 // exception, animating ONLY when they warrant the moment:
-                //   - collected from a CHEST                        -> animate (like any chest item)
-                //   - RECEIVED from the other player via the server -> animate ("delivering tracked")
-                //   - collected freestanding / bought in a shop     -> NO animation (quiet, no freeze)
+                //   - collected from a CHEST or a GIFT (Saria's Gift / NPC & event gives) -> animate,
+                //     like any handed-over item
+                //   - RECEIVED from the other player via the server                       -> animate
+                //     ("delivering tracked")
+                //   - collected as a freestanding golden skulltula / bought in a shop     -> NO
+                //     animation (quiet, no freeze) — the two vanilla-silent sources
                 // A token bound for the OTHER player is a foreign item (foreign flag set) that also
                 // animates — it's being sent away + its cross-world routing rides the get-item
                 // cutscene, so the moment must show. Overrides the rando/FastDrops skip heuristics;
                 // IS_MULTISHIP-gated so vanilla + rando are untouched.
                 if (IS_MULTISHIP) {
                     if (Randomizer_GetForeignItemOwner() < 0 && Randomizer_MultiShipIsTokenEntry(giEntry) &&
-                        !Randomizer_MultiShipCurrentCheckIsChest() && !Randomizer_MultiShipDeliveringTracked()) {
+                        !Randomizer_MultiShipCurrentCheckAnimatesToken() && !Randomizer_MultiShipDeliveringTracked()) {
                         showItemCutscene = false;
                     } else {
                         showItemCutscene = true;

@@ -667,19 +667,24 @@ extern "C" GetItemEntry Randomizer_MultiShipGoldTokenEntry(void) {
     return Rando::StaticData::RetrieveItem(RG_GOLD_SKULLTULA_TOKEN).GetGIEntry_Copy();
 }
 
-// Is the check currently mid-delivery a CHEST? Used by z_player's MultiShip token-animation
-// carve-out: a Gold Skulltula token found IN A CHEST keeps the over-head get-item animation (like
-// any chest item), while a token from a freestanding/skulltula location just shows a textbox
-// without freezing. Reads randomizerQueuedCheck — the RC of a locally-collected check, set by the
-// RC-queue before the give and cleared on receipt. RC_UNKNOWN_CHECK (e.g. a server-delivered item,
-// which carries no local check) is not a chest. Only meaningful for OWN items: the foreign path
-// clears randomizerQueuedCheck as soon as it stages the give, so this must not gate foreign items.
-extern "C" s32 Randomizer_MultiShipCurrentCheckIsChest(void) {
+// Should an OWN Gold Skulltula token collected at the check currently mid-delivery play the over-head
+// get-item animation? Used by z_player's MultiShip token-animation carve-out. Everything animates
+// EXCEPT the two vanilla-silent token sources: a freestanding golden skulltula (SPOILER_CHK_GOLD_SKULLTULA
+// — the token flies to you) and a shop purchase (a gDeliveryQueue give, which carries no local check ->
+// RC_UNKNOWN_CHECK). A token found in a CHEST or handed over by a GIFT (Saria's Gift / any NPC or event
+// give — SPOILER_CHK_EVENT_CHK_INF / ITEM_GET_INF / ...) animates like any other collected item. Reads
+// randomizerQueuedCheck — the RC of a locally-collected check, set by the RC-queue before the give and
+// cleared on receipt. Only meaningful for OWN items: the foreign path clears randomizerQueuedCheck as
+// soon as it stages the give, so this must not gate foreign items.
+extern "C" s32 Randomizer_MultiShipCurrentCheckAnimatesToken(void) {
     if (randomizerQueuedCheck == RC_UNKNOWN_CHECK) {
-        return 0;
+        return 0;  // no local check (own shop purchase / other gDeliveryQueue give) -> silent
     }
     auto loc = Rando::StaticData::GetLocation(randomizerQueuedCheck);
-    return (loc != nullptr && loc->GetCollectionCheck().type == SPOILER_CHK_CHEST) ? 1 : 0;
+    if (loc == nullptr) {
+        return 0;
+    }
+    return (loc->GetCollectionCheck().type != SPOILER_CHK_GOLD_SKULLTULA) ? 1 : 0;
 }
 
 // True when Link is in-game and able to START receiving an item right now. The MultiShip
@@ -749,6 +754,34 @@ extern "C" void Randomizer_LogReceiveBlockReason(void) {
                 gSaveContext.ship.pendingIceTrapCount);
 }
 
+// Backstop for the MultiShip delivery drain: force-end a get-item that has STALLED and can't
+// complete on its own — e.g. a delivered item whose get-item cutscene never finishes (the
+// heart-container object/animation stall, where z_player sets GETTING_ITEM|CARRYING_ACTOR|IN_CUTSCENE
+// and then waits forever for an object/animation that never loads). Clears the staged get-item + those
+// cutscene flags so the player returns to normal control, and drops any pending ice-trap freeze the
+// aborted give staged. Only acts when we're actually wedged in a get-item, so it never disturbs a
+// normal in-progress one. Returns true if it recovered. This is a last resort (the drain only calls it
+// after a long timeout) so one un-completable item can't jam the whole delivery queue forever.
+extern "C" bool Randomizer_MultiShipRecoverStuckGetItem(void) {
+    if (gPlayState == NULL || !GameInteractor::IsSaveLoaded()) {
+        return false;
+    }
+    Player* player = GET_PLAYER(gPlayState);
+    if (player == NULL) {
+        return false;
+    }
+    if (player->getItemId == GI_NONE && !(player->stateFlags1 & PLAYER_STATE1_GETTING_ITEM)) {
+        return false;  // not wedged in a get-item — nothing to recover
+    }
+    player->getItemId = GI_NONE;
+    player->getItemEntry = GET_ITEM_NONE;  // braced init; no C-style cast (C4576 in C++)
+    player->stateFlags1 &=
+        ~(PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_CARRYING_ACTOR | PLAYER_STATE1_IN_CUTSCENE);
+    gSaveContext.ship.pendingIceTrapCount = 0;
+    SPDLOG_WARN("[MultiShip] Force-ended a stalled get-item (backstop recovery)");
+    return true;
+}
+
 // Resolves the RandomizerGet `rgId` (the item a queued MultiShip give hands out) to the
 // (modIndex, getItemId) the player will actually receive, so the drain can match it on the
 // OnItemReceive hook and pop the right delivery (mirrors RandomizerOnItemReceiveHandler's
@@ -757,10 +790,31 @@ extern "C" void Randomizer_LogReceiveBlockReason(void) {
 // resolves against the CURRENT inventory, so the drain must call it BEFORE the give (the
 // pre-give inventory) and remember the result — re-resolving after receipt would yield the
 // next tier (inventory changed) and never match.
+// Maps a vanilla ItemID to the GetItemID the vanilla give (Item_Give -> Return_Item) reports on
+// receipt. Declared C-only in OTRGlobals.h, so re-declare with extern "C" linkage here (same pattern
+// as ItemTable_Retrieve above).
+extern "C" GetItemID RetrieveGetItemIDFromItemID(ItemID itemID);
+
 extern "C" void Randomizer_ResolveGive(int rgId, int* outModIndex, int* outGetItemId) {
     GetItemEntry e = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(rgId)).GetGIEntry_Copy();
     *outModIndex = static_cast<int>(e.modIndex);
     *outGetItemId = static_cast<int>(e.getItemId);
+    // A MOD_NONE item is delivered via Item_Give(itemId); its completion raises OnItemReceive with the
+    // entry for RetrieveGetItemIDFromItemID(itemId). When an ItemID maps to MORE THAN ONE GetItemID
+    // variant, that resolved GetItemID differs from the rando entry's own getItemId — so the drain's
+    // receipt match (which compares getItemId) never fires and the give re-issues every cycle. The
+    // Heart Container is exactly this: its rando entry carries GI_HEART_CONTAINER_2 (0x4F) but
+    // ItemID->GetItemID resolves to GI_HEART_CONTAINER (0x3D), which gave P1 "infinite heart
+    // containers" (the delivery re-issued forever, adding a heart each time). Resolve the SAME
+    // GetItemID the receipt will carry so the delivery confirms + pops. A single-variant item (swords,
+    // Huge Rupee) resolves to the same value, so it's unchanged; MOD_RANDOMIZER items are received by
+    // their RandomizerGet and are left alone.
+    if (e.modIndex == MOD_NONE) {
+        GetItemID receiptGid = RetrieveGetItemIDFromItemID(static_cast<ItemID>(e.itemId));
+        if (receiptGid != GI_MAX) {
+            *outGetItemId = static_cast<int>(receiptGid);
+        }
+    }
 }
 #endif
 
