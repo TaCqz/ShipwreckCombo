@@ -9,6 +9,9 @@
 #include "z64scene.h"
 #include <soh/OTRGlobals.h>
 #include "soh/Enhancements/randomizer/randomizer.h"
+// F-051: MultiShip_HintItemName (owner-aware reward name from the multiworld store). Header is a
+// no-op unless ENABLE_MULTISHIP; the only caller below is ENABLE_MULTISHIP-gated.
+#include "soh/Network/MultiShip/MultiShipHints.h"
 
 extern "C" {
 extern PlayState* gPlayState;
@@ -140,8 +143,18 @@ void BuildSkulltulaPeopleMessage(uint16_t* textId, bool* loadFromMessageTable) {
                                       "Yeaaarrgh! Je suis maudit!^Détruit encore %y[[d]] Araignées de la Malédiction%w "
                                       "et j'aurai quelque chose à te donner! [[color]]([[1]])%w");
     msg.InsertNumber(count);
-    msg.Replace("[[color]]", item.GetColor());
-    msg.InsertNames({ item.GetHint().GetHintMessage() });
+#ifdef ENABLE_MULTISHIP
+    if (IS_MULTISHIP) {
+        // F-051: cross-world-aware reward name from the multiworld store. It already carries its own
+        // colour codes (and, for a foreign item, the "<Player>'s" possessive), so drop [[color]].
+        msg.Replace("[[color]]", "");
+        msg.InsertNames({ MultiShip_HintItemName(rc) });
+    } else
+#endif
+    {
+        msg.Replace("[[color]]", item.GetColor());
+        msg.InsertNames({ item.GetHint().GetHintMessage() });
+    }
     msg.AutoFormat();
     msg.LoadIntoFont();
     *loadFromMessageTable = false;
@@ -368,12 +381,14 @@ void BuildBossKeyHintMessage(uint16_t* textId, bool* loadFromMessageTable) {
 void RegisterStaticHints() {
     // Ganondorf
     COND_ID_HOOK(OnOpenText, TEXT_GANONDORF, RAND_GET_OPTION(RSK_GANONDORF_HINT), BuildGanondorfHint);
-    // Sheik
-    COND_ID_HOOK(OnOpenText, TEXT_SHEIK_NEED_HOOK, IS_RANDO, BuildSheikMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_SHEIK_HAVE_HOOK, IS_RANDO, BuildSheikMessage);
-    // Altar
-    COND_ID_HOOK(OnOpenText, TEXT_ALTAR_CHILD, IS_RANDO, BuildChildAltarMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_ALTAR_ADULT, IS_RANDO, BuildAdultAltarMessage);
+    // Sheik (F-051: also under MultiShip — the OoT / Light-Arrow hints it renders are populated in
+    // the Context by MultiShip_BuildStaticHints; the non-hint flavour branches are harmless there).
+    COND_ID_HOOK(OnOpenText, TEXT_SHEIK_NEED_HOOK, IS_RANDO || IS_MULTISHIP, BuildSheikMessage);
+    COND_ID_HOOK(OnOpenText, TEXT_SHEIK_HAVE_HOOK, IS_RANDO || IS_MULTISHIP, BuildSheikMessage);
+    // Altar (F-051: also under MultiShip — win-condition text + stone/medallion regions come from
+    // MultiShip_BuildStaticHints).
+    COND_ID_HOOK(OnOpenText, TEXT_ALTAR_CHILD, IS_RANDO || IS_MULTISHIP, BuildChildAltarMessage);
+    COND_ID_HOOK(OnOpenText, TEXT_ALTAR_ADULT, IS_RANDO || IS_MULTISHIP, BuildAdultAltarMessage);
     // Skulltula
     COND_ID_HOOK(OnOpenText, TEXT_SKULLTULA_PEOPLE_IM_CURSED, ANY_SKULLTULA_HINTS, BuildSkulltulaPeopleMessage);
     COND_ID_HOOK(OnOpenText, TEXT_SKULLTULA_PEOPLE_MAKE_YOU_VERY_RICH, RAND_GET_OPTION(RSK_KAK_100_SKULLS_HINT),
@@ -384,17 +399,19 @@ void RegisterStaticHints() {
     COND_ID_HOOK(OnOpenText, TEXT_CHEST_GAME_PROCEED, RAND_GET_OPTION(RSK_GREG_HINT), BuildGregHintMessage);
     COND_ID_HOOK(OnOpenText, TEXT_CHEST_GAME_REAL_GAMBLER, RAND_GET_OPTION(RSK_GREG_HINT), BuildGregHintMessage);
     COND_ID_HOOK(OnOpenText, TEXT_CHEST_GAME_THANKS_A_LOT, RAND_GET_OPTION(RSK_GREG_HINT), BuildGregHintMessage);
-    // Warp
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_MINUET_OF_FOREST, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS),
+    // Warp. F-051: MultiShip doesn't shuffle warp songs, so destinations are vanilla and the game's
+    // own confirmation text already names them (honoring Warp Song Hints = On). To honor Warp Song
+    // Hints = Off we register this message only in that case, showing the "mysterious place" text.
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_MINUET_OF_FOREST, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)),
                  BuildMinuetWarpMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_BOLERO_OF_FIRE, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS), BuildBoleroWarpMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_SERENADE_OF_WATER, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS),
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_BOLERO_OF_FIRE, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)), BuildBoleroWarpMessage);
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_SERENADE_OF_WATER, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)),
                  BuildSerenadeWarpMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_REQUIEM_OF_SPIRIT, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS),
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_REQUIEM_OF_SPIRIT, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)),
                  BuildRequiemWarpMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_NOCTURNE_OF_SHADOW, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS),
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_NOCTURNE_OF_SHADOW, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)),
                  BuildNocturneWarpMessage);
-    COND_ID_HOOK(OnOpenText, TEXT_WARP_PRELUDE_OF_LIGHT, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS),
+    COND_ID_HOOK(OnOpenText, TEXT_WARP_PRELUDE_OF_LIGHT, RAND_GET_OPTION(RSK_SHUFFLE_WARP_SONGS) || (IS_MULTISHIP && !RAND_GET_OPTION(RSK_WARP_SONG_HINTS)),
                  BuildPreludeWarpMessage);
     // Frogs
     COND_ID_HOOK(OnOpenText, TEXT_FROGS_UNDERWATER, RAND_GET_OPTION(RSK_FROGS_HINT), BuildFrogsHintMessage);

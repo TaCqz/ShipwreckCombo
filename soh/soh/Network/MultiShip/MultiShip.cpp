@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <spdlog/fmt/fmt.h>
 #include "MultiShipSeed.h"
+#include "MultiShipHints.h"  // F-051: MultiShip_BuildStaticHints (static-hint objects from the store)
 
 extern "C" {
 extern SaveContext gSaveContext;
@@ -330,6 +331,19 @@ static int MultiShip_CopyHonoredSettingsToContext() {
         RSK_STARTING_SUNS_SONG, RSK_STARTING_SONG_OF_TIME, RSK_STARTING_SONG_OF_STORMS,
         RSK_STARTING_MINUET_OF_FOREST, RSK_STARTING_BOLERO_OF_FIRE, RSK_STARTING_SERENADE_OF_WATER,
         RSK_STARTING_REQUIEM_OF_SPIRIT, RSK_STARTING_NOCTURNE_OF_SHADOW, RSK_STARTING_PRELUDE_OF_LIGHT,
+        // F-051 — Tab 4 "Static Hints" (17 fixed hint-givers). These don't affect placement, but
+        // they must reach the Context so (a) the StaticHints.cpp COND_ID_HOOK registration
+        // conditions (RAND_GET_OPTION(RSK_*_HINT)) enable the right givers, and (b) the builders'
+        // internal setting reads (OoT/Sheik/altar hints, warp-song hints) match the seed. The hint
+        // TEXT itself is built from the placement store by MultiShip_BuildStaticHints. The 5 Gold-
+        // Skulltula reward hints share one builder (BuildSkulltulaPeopleMessage), so all 5 are
+        // carried even though the ticket enumerated only the 10-token one; 100 GS stays omitted.
+        RSK_TOT_ALTAR_HINT, RSK_GANONDORF_HINT, RSK_SHEIK_LA_HINT, RSK_BOSS_KEY_HINT,
+        RSK_DAMPES_DIARY_HINT, RSK_GREG_HINT, RSK_SARIA_HINT, RSK_MIDO_HINT, RSK_FROGS_HINT,
+        RSK_OOT_HINT, RSK_BIGGORON_HINT, RSK_BIG_POES_HINT, RSK_CHICKENS_HINT, RSK_HBA_HINT,
+        RSK_WARP_SONG_HINTS, RSK_SCRUB_TEXT_HINT,
+        RSK_KAK_10_SKULLS_HINT, RSK_KAK_20_SKULLS_HINT, RSK_KAK_30_SKULLS_HINT,
+        RSK_KAK_40_SKULLS_HINT, RSK_KAK_50_SKULLS_HINT,
     };
     int copied = 0;
     for (const auto& s : d.settings) {
@@ -461,6 +475,13 @@ static void MultiShip_ApplyPlacementsToContext() {
     // F-043: now that the Context exists, also apply the synced area-access settings + re-bake the
     // matching world-state flags so the game world matches the seed (open forest, fountain, etc.).
     MultiShip_ApplyAreaAccessWorldState();
+
+    // F-051: build the static-hint objects (ToT altar, Ganondorf, Sheik, Dampé, Mido, Saria, GS
+    // rewards, …) into the Context from the placement store, cross-world aware. Must run AFTER the
+    // settings copy above (it reads the honored hint settings) and BEFORE the givers are talked to
+    // (StaticHints.cpp reads these via RAND_GET_HINT). Re-registration of those hooks against the
+    // now-correct settings is re-asserted from the OnLoadGame hook via ShipInit::Init("IS_RANDO").
+    MultiShip_BuildStaticHints();
 
     // Diagnostic (F-045): dump the dungeon-item modes the live Context actually holds AFTER the
     // settings copy, so multiship.log shows whether the synced reward/key settings reached the game
@@ -1029,6 +1050,14 @@ void MultiShip::RegisterHooks() {
         // own items locally works even while disconnected, so this is NOT gated on isConnected.
         gNeedsContextApply.store(false);
         MultiShip_ApplyPlacementsToContext();
+        // F-051: re-assert the "IS_RANDO" ShipInit path now that ApplyPlacementsToContext has put
+        // our placements + honored settings + static-hint objects into the Context. The static-hint
+        // hooks (StaticHints.cpp) evaluate their COND_ID_HOOK conditions (RAND_GET_OPTION(RSK_*_HINT))
+        // at registration time; the randomizer's own OnLoadGame also runs this, but its ordering
+        // relative to ours isn't guaranteed, so re-running here makes the givers register against the
+        // correct settings regardless. Idempotent (COND_ID_HOOK unregisters then re-registers), and
+        // RandomizerRegisterHooks is boot-only (not on this path), so nothing re-registers recursively.
+        ShipInit::Init("IS_RANDO");
         // F-041: grant the Link's Pocket starting dungeon reward once (guarded by the collected
         // set, which ApplyPlacementsToContext just restored for an existing file). Reward is local,
         // so this runs even while disconnected. New files are already granted at creation
